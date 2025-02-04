@@ -8,7 +8,7 @@ MODULE MOSART_physics_mod
 ! Jan 2012, only consider land surface water routing, no parallel computation
 ! May 2012, modified to be coupled with CLM
 !-----------------------------------------------------------------------
-
+! this is just a test of code modificaiton
 ! !USES:
   use shr_kind_mod  , only : r8 => shr_kind_r8, SHR_KIND_CL
   use shr_const_mod , only : SHR_CONST_REARTH, SHR_CONST_PI

@@ -255,8 +255,9 @@ end if
         J_ = doy !76.2 !doy
         delta = 0.409 * sin(2*pi*J_/365 - 1.39)
         temp1 = -tan(phi) * tan(delta)
-        temp2 = sqrt(1 - ((tan(phi))**2)*((tan(delta))**2))
-        omega_s = pi/2 - atan(temp1/temp2)
+        temp2 = 1._r8 - ((tan(phi))**2)*((tan(delta))**2)
+        temp2 = sqrt(max(0._r8, temp2))
+        omega_s = pi/2 - atan2(temp1, temp2)
         dr = 1 + 0.033*cos(2*pi*J_/365)
         Ket = (24/pi)*Gsc*dr*(omega_s*sin(phi)*sin(delta) + cos(phi)*cos(delta)*sin(omega_s))
 		Kso = (0.75 + 2*1e-5*elev)*Ket

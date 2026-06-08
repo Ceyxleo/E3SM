@@ -20,7 +20,7 @@ MODULE mosart_lake_t_mod
     use MOSART_lake_heat_mod
     use MOSART_lake_geometry_mod
     implicit none
-    
+    private
     real(r8), parameter :: TINYVALUE  = 1.0e-14_r8  ! double precision variable has a significance of about 16 decimal digits
 
     public mosart_lake_t
@@ -690,7 +690,7 @@ MODULE mosart_lake_t_mod
                         phi_x(j) = 0._r8
                     end do
                     
-                    if (sh_net > TINYVALUE .and. TLake_t%d_ns(iunit) >1) then
+                    if (sh_net > TINYVALUE .and. TLake_t%d_ns(iunit) >2) then
                         k=0
                         top_d=TLake_t%d_lake(iunit)-TLake_t%d_z(iunit,TLake_t%d_ns(iunit)-k)
                         if(top_d < 0.61_r8) then
@@ -757,11 +757,14 @@ MODULE mosart_lake_t_mod
                     ! Calculate Richardson number
                         drhodz(j) = (rho_z(j-1)-rho_z(j))/0.5_r8*(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))
                         bv_f = max((grav/rho_w)*drhodz(j),0._r8)
-                        if (s_vel <= TINYVALUE) ri = 0._r8
-                        ri = bv_f/((s_vel/(0.4_r8*TLake_t%d_z(iunit,j)))**2._r8)                
+                        if (s_vel <= TINYVALUE .or. TLake_t%d_z(iunit,j) <= TINYVALUE) then
+                            ri = 0._r8
+                        else
+                            ri = bv_f/((s_vel/(0.4_r8*TLake_t%d_z(iunit,j)))**2._r8)
+                        end if
                     ! Calculate Froude number
                         l_vel = q_adv(j)*TUnit_lake_t%Length(iunit)/(sar*TLake_t%a_d(iunit,j)*TLake_t%dd_z(iunit,j))
-                        if (q_adv(j) <= -TINYVALUE .or. drhodz(j) <= -TINYVALUE) then
+                        if (q_adv(j) <= TINYVALUE .or. drhodz(j) <= TINYVALUE .or. abs(l_vel) <= TINYVALUE) then
                             Fr(j) = 0._r8
                         else    
                             Fr(j)= (grav*TLake_t%dd_z(iunit,j)*drhodz(j)/rho_w)/l_vel**2._r8
@@ -772,36 +775,49 @@ MODULE mosart_lake_t_mod
                 
                 !*****************************************************************
                 ! Calculate matrix elements
-                    do j = 1,TLake_t%d_ns(iunit)
-                        if (j == 1 .and. TLake_t%d_ns(iunit)>1) then
-                            m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
-                            m2(j) = m1(j)*sar*TLake_t%a_d(iunit,j+1)*df_eff(j+1)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j+1))
-                            m3(j) = 0._r8                        
-                            Fx(j) = dtime*phi_z(j)/(TLake_t%d_v(iunit,j)*c_w*rho_z(j))
-                            a(j) = - (m2(j))
-                            b(j) = 1._r8 + (m2(j) + m3(j)) 
-                            c(j) = 0._r8 
-                            r(j) = TLake_t%temp_lake(iunit,j) + Fx(j) ! bottom boundary condition 
-                        elseif (j <= TLake_t%d_ns(iunit)-1 .and. TLake_t%d_ns(iunit)>2) then
-                            m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
-                            m2(j) = m1(j)*sar*TLake_t%a_d(iunit,j+1)*df_eff(j+1)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j+1))
-                            m3(j) = m1(j)*sar*TLake_t%a_d(iunit,j)*df_eff(j)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))                        
-                            Fx(j) = dtime*phi_z(j)/(TLake_t%d_v(iunit,j)*c_w*rho_z(j))
-                            a(j) = - m2(j)
-                            b(j) = 1._r8 + m2(j) + m3(j) 
-                            c(j) = - m3(j)
-                            r(j) = TLake_t%temp_lake(iunit,j) + Fx(j)
-                        elseif (j == TLake_t%d_ns(iunit)) then!top layer
-                            m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
-                            m2(j) = 0._r8
-                            m3(j) = m1(j)*sar*TLake_t%a_d(iunit,j)*df_eff(j)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))
-                            Fx(j) = dtime*((phi_o-sh_net)*sar*TLake_t%a_d(iunit,TLake_t%d_ns(iunit)+1)+phi_z(j))/(TLake_t%d_v(iunit,TLake_t%d_ns(iunit))*c_w*rho_z(j)) ! 
-                            a(j) = 0._r8
-                            b(j) = 1._r8 + (m2(j) + m3(j)) 
-                            c(j) = - (m3(j))
-                            r(j) = TLake_t%temp_lake(iunit,j) + Fx(j) ! top boundary condition                         
-                        end if
-                    end do    
+                ! add the case for single layer lake
+                    if (TLake_t%d_ns(iunit) == 1) then
+                        j = 1
+                        m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
+                        m2(j) = 0._r8
+                        m3(j) = 0._r8
+                        Fx(j) = dtime*((phi_o-sh_net)*sar*TLake_t%a_d(iunit,j+1)+phi_z(j))/(TLake_t%d_v(iunit,j)*c_w*rho_z(j))
+                        a(j) = 0._r8
+                        b(j) = 1._r8
+                        c(j) = 0._r8
+                        r(j) = TLake_t%temp_lake(iunit,j) + Fx(j)
+                    else
+                        do j = 1,TLake_t%d_ns(iunit)
+                            if (j == 1 .and. TLake_t%d_ns(iunit)>1) then
+                                m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
+                                m2(j) = m1(j)*sar*TLake_t%a_d(iunit,j+1)*df_eff(j+1)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j+1))
+                                m3(j) = 0._r8                        
+                                Fx(j) = dtime*phi_z(j)/(TLake_t%d_v(iunit,j)*c_w*rho_z(j))
+                                a(j) = - (m2(j))
+                                b(j) = 1._r8 + (m2(j) + m3(j)) 
+                                c(j) = 0._r8 
+                                r(j) = TLake_t%temp_lake(iunit,j) + Fx(j) ! bottom boundary condition 
+                            elseif (j <= TLake_t%d_ns(iunit)-1 .and. TLake_t%d_ns(iunit)>2) then
+                                m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
+                                m2(j) = m1(j)*sar*TLake_t%a_d(iunit,j+1)*df_eff(j+1)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j+1))
+                                m3(j) = m1(j)*sar*TLake_t%a_d(iunit,j)*df_eff(j)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))                        
+                                Fx(j) = dtime*phi_z(j)/(TLake_t%d_v(iunit,j)*c_w*rho_z(j))
+                                a(j) = - m2(j)
+                                b(j) = 1._r8 + m2(j) + m3(j) 
+                                c(j) = - m3(j)
+                                r(j) = TLake_t%temp_lake(iunit,j) + Fx(j)
+                            elseif (j == TLake_t%d_ns(iunit)) then!top layer
+                                m1(j) = 2._r8*dtime/(0.5_r8*(sar*TLake_t%a_d(iunit,j)+sar*TLake_t%a_d(iunit,j+1))*TLake_t%dd_z(iunit,j))
+                                m2(j) = 0._r8
+                                m3(j) = m1(j)*sar*TLake_t%a_d(iunit,j)*df_eff(j)/(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))
+                                Fx(j) = dtime*((phi_o-sh_net)*sar*TLake_t%a_d(iunit,TLake_t%d_ns(iunit)+1)+phi_z(j))/(TLake_t%d_v(iunit,TLake_t%d_ns(iunit))*c_w*rho_z(j)) ! 
+                                a(j) = 0._r8
+                                b(j) = 1._r8 + (m2(j) + m3(j)) 
+                                c(j) = - (m3(j))
+                                r(j) = TLake_t%temp_lake(iunit,j) + Fx(j) ! top boundary condition                         
+                            end if
+                        end do
+                    end if
             !if(iunit == 234096) then
             !    write(unit=81003,fmt="(i4, i4, i4, i4, 7(e18.10))") 3, ww, dflag, TLake_t%d_ns(iunit), TLake_t%d_lake(iunit), TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)), TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1), TLake_t%temp_lake(iunit,TLake_t%d_ns(iunit)), TLake_t%temp_lake(iunit,TLake_t%d_ns(iunit)-1),t_in, THeat%forc_t(iunit)
             !    write(unit=81000,fmt="(i4, i4, i4, i4, 7(e18.10))") 3, ww, dflag, TLake_t%d_ns(iunit), TLake_t%d_lake(iunit), TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)), TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1), TLake_t%temp_lake(iunit,TLake_t%d_ns(iunit)), TLake_t%temp_lake(iunit,TLake_t%d_ns(iunit)-1),t_in, THeat%forc_t(iunit)
@@ -876,14 +892,16 @@ MODULE mosart_lake_t_mod
                             denmix = den(tmix)
                             
                             ! Check if instability exists below mixed layer    and mix layers    
-                            if(rho_z(mix1-1) < denmix .and. mix1 >= 2) then
-                                mix1=mix1-1    
-                            
-                                ! Calculate temperature of mixed layer    
-                                mixvol1=TLake_t%d_v(iunit,mix1)*1._r8
-                                sumvol=sumvol + mixvol1
-                                tsum=tsum+TLake_t%temp_lake(iunit,mix1)*mixvol1
-                                tmix= tsum/sumvol
+                            if (mix1 >= 2) then
+                                if(rho_z(mix1-1) < denmix) then
+                                    mix1=mix1-1    
+                                
+                                    ! Calculate temperature of mixed layer    
+                                    mixvol1=TLake_t%d_v(iunit,mix1)*1._r8
+                                    sumvol=sumvol + mixvol1
+                                    tsum=tsum+TLake_t%temp_lake(iunit,mix1)*mixvol1
+                                    tmix= tsum/sumvol
+                                end if
                             end if
                             
                             ! Calculate density of mixed layer    
@@ -1299,7 +1317,7 @@ MODULE mosart_lake_t_mod
             rho_layers(j) = den(TLake_t%temp_lake(iunit,j))
         end do
                 
-        jmin=TLake_t%J_Min(iunit)
+        jmin=max(1, TLake_t%J_Min(iunit))
         !if(d_n>3)jmax=d_n-2 
         !if(d_n<=3)jmax=d_n-1
         jmax = d_n

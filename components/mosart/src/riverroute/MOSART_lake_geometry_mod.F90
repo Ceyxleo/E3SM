@@ -139,20 +139,22 @@ MODULE MOSART_lake_geometry_mod
                     endif
                end do    
                  
-               if (TLake_r%d_ns(iunit)>1 .and. TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)-1)<ddz_top)then !layer thickness too small
-                    TLake_r%d_ns(iunit)=int((TLake_r%d_lake(iunit)/ddz_top)+1) 
-                    do j=1,nlayers!TLake_r%d_ns(iunit)
-                          TLake_r%dd_z(iunit,j) = 0._r8
-                    end do
-                         
-                    ! Reinitialize layer thickness
-                    do j = TLake_r%d_ns(iunit),1,-1
-                          if (j == TLake_r%d_ns(iunit)) then
-                              TLake_r%dd_z(iunit,j) = ddz_top      !top layer depth
-                          else
-                              TLake_r%dd_z(iunit,j) = (TLake_r%d_lake(iunit) - TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)))/(TLake_r%d_ns(iunit) - 1) !bottom layers evenly descritized
-                          end if
-                    end do    
+               if (TLake_r%d_ns(iunit)>1) then 
+                   if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)-1)<ddz_top) then !layer thickness too small
+                        TLake_r%d_ns(iunit)=int((TLake_r%d_lake(iunit)/ddz_top)+1) 
+                        do j=1,nlayers!TLake_r%d_ns(iunit)
+                            TLake_r%dd_z(iunit,j) = 0._r8
+                        end do
+                            
+                        ! Reinitialize layer thickness
+                        do j = TLake_r%d_ns(iunit),1,-1
+                            if (j == TLake_r%d_ns(iunit)) then
+                                TLake_r%dd_z(iunit,j) = ddz_top      !top layer depth
+                            else
+                                TLake_r%dd_z(iunit,j) = (TLake_r%d_lake(iunit) - TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)))/(TLake_r%d_ns(iunit) - 1) !bottom layers evenly descritized
+                            end if
+                        end do
+                    end if    
                end if
              
                if (TLake_r%d_ns(iunit)>1) then
@@ -320,20 +322,22 @@ MODULE MOSART_lake_geometry_mod
                     endif
                end do    
                  
-               if (TLake_t%d_ns(iunit)>1 .and. TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1)<ddz_top)then !layer thickness too small
-                    TLake_t%d_ns(iunit)=int((TLake_t%d_lake(iunit)/ddz_top)+1) 
-                    do j=1,nlayers!TLake_t%d_ns(iunit)
-                          TLake_t%dd_z(iunit,j) = 0._r8
-                    end do
-                         
-                    ! Reinitialize layer thickness
-                    do j = TLake_t%d_ns(iunit),1,-1
-                          if (j == TLake_t%d_ns(iunit)) then
-                              TLake_t%dd_z(iunit,j) = ddz_top      !top layer depth
-                          else
-                              TLake_t%dd_z(iunit,j) = (TLake_t%d_lake(iunit) - TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)))/(TLake_t%d_ns(iunit) - 1) !bottom layers evenly descritized
-                          end if
-                    end do    
+               if (TLake_t%d_ns(iunit)>1) then 
+                   if (TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1)<ddz_top) then !layer thickness too small
+                        TLake_t%d_ns(iunit)=int((TLake_t%d_lake(iunit)/ddz_top)+1) 
+                        do j=1,nlayers!TLake_t%d_ns(iunit)
+                            TLake_t%dd_z(iunit,j) = 0._r8
+                        end do
+                            
+                        ! Reinitialize layer thickness
+                        do j = TLake_t%d_ns(iunit),1,-1
+                            if (j == TLake_t%d_ns(iunit)) then
+                                TLake_t%dd_z(iunit,j) = ddz_top      !top layer depth
+                            else
+                                TLake_t%dd_z(iunit,j) = (TLake_t%d_lake(iunit) - TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)))/(TLake_t%d_ns(iunit) - 1) !bottom layers evenly descritized
+                            end if
+                        end do
+                    end if    
                end if
              
                if (TLake_t%d_ns(iunit)>1) then

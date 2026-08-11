@@ -640,7 +640,7 @@ MODULE mosart_lake_t_mod
                         mytmp(7) = TLake_t%d_lake(iunit) !
                         mytmp(8) = rtmCTL%latc(iunit) * SHR_CONST_PI/180._r8 ! degree to radians
                         mytmp(9) = THeat%forc_solar(iunit) * 1e-6 * 86400 ! J·m-2·s-1 (w/m^2) to MJ·m-2·d-1
-                        mytmp(10)= TUnit_lake_r%elev(iunit) !
+                        mytmp(10)= TUnit_lake_t%elev(iunit) !
                         mytmp(11)= alb_s !
                         mytmp(12)= TLake_t%temp_lake(iunit,TLake_t%d_ns(iunit)) - 273.15 !11.63
                         mytmp(13)= doy()*1._r8 ! return day of the year corresponding to the current time step
@@ -752,7 +752,7 @@ MODULE mosart_lake_t_mod
                     df_eff(TLake_t%d_ns(iunit)+1)= 0._r8        !air interface
                     do j = 2,TLake_t%d_ns(iunit) 
                         q_adv(j) = max((dv_in(j)+dv_ou(j)),0._r8)
-                        k_ad(j)=0.5_r8*rho_w*q_adv(j)*dtime*(q_adv(j)/(TUnit_lake_t%Width(iunit)*TLake_t%dd_z(iunit,j)))**2._r8 ! Advection driven kinetic energy 
+                        k_ad(j)=0.5_r8*rho_w*q_adv(j)*dtime*(q_adv(j)/(TUnit_lake_t%Width(iunit)*1000._r8*TLake_t%dd_z(iunit,j)))**2._r8 ! Advection driven kinetic energy 
                         dis_ad(j)= k_ad(j)/(rho_w*TLake_t%v_zt(iunit,j)*dtime)    ! rate of dissipation-inflow/outflow                    
                     ! Calculate Richardson number
                         drhodz(j) = (rho_z(j-1)-rho_z(j))/0.5_r8*(TLake_t%dd_z(iunit,j)+TLake_t%dd_z(iunit,j-1))
@@ -763,7 +763,7 @@ MODULE mosart_lake_t_mod
                             ri = bv_f/((s_vel/(0.4_r8*TLake_t%d_z(iunit,j)))**2._r8)
                         end if
                     ! Calculate Froude number
-                        l_vel = q_adv(j)*TUnit_lake_t%Length(iunit)/(sar*TLake_t%a_d(iunit,j)*TLake_t%dd_z(iunit,j))
+                        l_vel = q_adv(j)*TUnit_lake_t%Length(iunit)*1000._r8/(sar*TLake_t%a_d(iunit,j)*TLake_t%dd_z(iunit,j))
                         if (q_adv(j) <= TINYVALUE .or. drhodz(j) <= TINYVALUE .or. abs(l_vel) <= TINYVALUE) then
                             Fr(j) = 0._r8
                         else    
@@ -1466,20 +1466,27 @@ MODULE mosart_lake_t_mod
             call shr_sys_abort('mosart: negative storage in MOSART-lake: '//subname)
         end if        
 
-        if (v_sum > V_min .and. abs(TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1) - v_sum)/v_sum > myTINYVALUE) then
-            write(iulog,*) 'Type 3 error in t-zone lake water balance check ! ', iunit, TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1), TLake_t%v_zt(iunit, TLake_t%d_ns(iunit)), v_sum, v_sum + TLake_t%v_zt(iunit,1)
-            call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
-        end if        
+        if (v_sum > V_min) then
+            if (abs(TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1) - v_sum) / v_sum > myTINYVALUE) then
+                write(iulog,*) 'Type 3 error in t-zone lake water balance check ! ', iunit, TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1), TLake_t%v_zt(iunit, TLake_t%d_ns(iunit)), v_sum, v_sum + TLake_t%v_zt(iunit,1)
+                call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
+            end if
+        end if
 
-        if (v_sum > V_min .and. abs(TLake_t%V_str(iunit) - v_sum)/v_sum > myTINYVALUE) then
-            write(iulog,*) 'Type 4 error in t-zone lake water balance check ! ', iunit, TLake_t%V_str(iunit), v_sum
-            call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
-        end if                       
+        if (v_sum > V_min) then
+            if (abs(TLake_t%V_str(iunit) - v_sum) / v_sum > myTINYVALUE) then
+                write(iulog,*) 'Type 4 error in t-zone lake water balance check ! ', iunit, TLake_t%V_str(iunit), v_sum
+                call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
+            end if
+        end if
 
-        if (TLake_t%V_str(iunit) > V_min .and. abs(TLake_t%v_zt(iunit, TLake_t%d_ns(iunit)+1) - TLake_t%V_str(iunit))/TLake_t%V_str(iunit) > myTINYVALUE) then
-            write(iulog,*) 'Type 5 error in t-zone lake water balance check ! ', iunit, TLake_t%v_zt(iunit, TLake_t%d_ns(iunit)+1), TLake_t%V_str(iunit), TLake_t%v_zt(iunit, TLake_t%d_ns(iunit)+1) - TLake_t%V_str(iunit), TLake_t%lake_inflow(iunit)
-            call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
-        end if                       
+        if (TLake_t%V_str(iunit) > V_min) then
+            if (abs(TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1) - TLake_t%V_str(iunit)) / &
+                TLake_t%V_str(iunit) > myTINYVALUE) then
+                write(iulog,*) 'Type 5 error in t-zone lake water balance check ! ', iunit, TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1), TLake_t%V_str(iunit), TLake_t%v_zt(iunit, TLake_t%d_ns(iunit) + 1) - TLake_t%V_str(iunit), TLake_t%lake_inflow(iunit)
+                call shr_sys_abort('mosart: imbalance in MOSART-lake: '//subname)
+            end if
+        end if
 
     end subroutine lake_t_waterbalance_check
 

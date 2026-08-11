@@ -776,7 +776,7 @@ MODULE mosart_lake_r_mod
                     df_eff(TLake_r%d_ns(iunit)+1)= 0._r8        !air interface
                     do j = 2,TLake_r%d_ns(iunit) 
                         q_adv(j) = max((dv_in(j)+dv_ou(j)),0._r8)
-                        k_ad(j)=0.5_r8*rho_w*q_adv(j)*dtime*(q_adv(j)/(TUnit_lake_r%Width(iunit)*TLake_r%dd_z(iunit,j)))**2._r8 ! Advection driven kinetic energy 
+                        k_ad(j)=0.5_r8*rho_w*q_adv(j)*dtime*(q_adv(j)/(TUnit_lake_r%Width(iunit)*1000._r8*TLake_r%dd_z(iunit,j)))**2._r8 ! Advection driven kinetic energy 
                         dis_ad(j)= k_ad(j)/(rho_w*TLake_r%v_zt(iunit,j)*dtime)    ! rate of dissipation-inflow/outflow                    
                     ! Calculate Richardson number
                         drhodz(j) = (rho_z(j-1)-rho_z(j))/0.5_r8*(TLake_r%dd_z(iunit,j)+TLake_r%dd_z(iunit,j-1))
@@ -787,7 +787,7 @@ MODULE mosart_lake_r_mod
                             ri = bv_f/((s_vel/(0.4_r8*TLake_r%d_z(iunit,j)))**2._r8)
                         end if
                     ! Calculate Froude number
-                        l_vel = q_adv(j)*TUnit_lake_r%Length(iunit)/(sar*TLake_r%a_d(iunit,j)*TLake_r%dd_z(iunit,j))
+                        l_vel = q_adv(j)*TUnit_lake_r%Length(iunit)*1000._r8/(sar*TLake_r%a_d(iunit,j)*TLake_r%dd_z(iunit,j))
                         if (q_adv(j) <= TINYVALUE .or. drhodz(j) <= TINYVALUE .or. abs(l_vel) <= TINYVALUE) then
                             Fr(j) = 0._r8
                         else    

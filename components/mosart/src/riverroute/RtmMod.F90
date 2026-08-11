@@ -5221,12 +5221,20 @@ contains
 
          ier = pio_inq_varid(ncid, 'mlake_fhA_a', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_r%para_a, ier)
-         if (masterproc) write(iulog,FORMR) trim(subname),' read para_a in r-lake',minval(TUnit_lake_r%para_a),maxval(TUnit_lake_r%para_a)
+         if (masterproc .and. any(TUnit_lake_r%lake_flg >= 1)) then
+             write(iulog,FORMR) trim(subname),' read para_a in r-lake', &
+                 minval(TUnit_lake_r%para_a, mask=TUnit_lake_r%lake_flg >= 1), &
+                 maxval(TUnit_lake_r%para_a, mask=TUnit_lake_r%lake_flg >= 1)
+         end if
          call shr_sys_flush(iulog)
          
          ier = pio_inq_varid(ncid, 'mlake_fhA_b', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_r%para_b, ier)
-         if (masterproc) write(iulog,FORMR) trim(subname),' read para_a in r-lake',minval(TUnit_lake_r%para_b),maxval(TUnit_lake_r%para_b)
+         if (masterproc .and. any(TUnit_lake_r%lake_flg >= 1)) then
+             write(iulog,FORMR) trim(subname),' read para_b in r-lake', &
+                 minval(TUnit_lake_r%para_b, mask=TUnit_lake_r%lake_flg >= 1), &
+                 maxval(TUnit_lake_r%para_b, mask=TUnit_lake_r%lake_flg >= 1)
+         end if
          call shr_sys_flush(iulog)
          
          do iunit = rtmCTL%begr, rtmCTL%endr
@@ -5245,9 +5253,12 @@ contains
                  if(TUnit_lake_r%elev(iunit) <TINYVALUE) then
                      TUnit_lake_r%elev(iunit) = 0._r8
                  end if
-             else
+             end if
+             if (TUnit_lake_r%lake_flg(iunit) < 1) then
                  TUnit_lake_r%V_max(iunit) = 0._r8
                  TUnit_lake_r%A_max(iunit) = 0._r8
+                 TUnit_lake_r%para_a(iunit) = 0._r8
+                 TUnit_lake_r%para_b(iunit) = 0._r8
              end if
              
              !if(rtmCTL%latc(iunit)==53.75 .and. rtmCTL%lonc(iunit)==14.75) then
@@ -5296,24 +5307,36 @@ contains
          if (masterproc) write(iulog,FORMR) trim(subname),' read lake_flag in t-lake',minval(TUnit_lake_t%lake_flg),maxval(TUnit_lake_t%lake_flg)
          call shr_sys_flush(iulog)
 
-         ier = pio_inq_varid(ncid, 'tlake_depth_m', vardesc)
+         ier = pio_inq_varid(ncid, 'tlake_Elevation', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%elev, ier)
          if (masterproc) write(iulog,FORMR) trim(subname),' read elev in t-lake',minval(TUnit_lake_t%elev),maxval(TUnit_lake_t%elev)
          call shr_sys_flush(iulog)
 
          ier = pio_inq_varid(ncid, 'tlake_drainage_area', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%A_local, ier)
-         if (masterproc) write(iulog,FORMR) trim(subname),' read tlake_drainage_area in t-lake',minval(TUnit_lake_t%A_local),maxval(TUnit_lake_t%A_local)
+         if (masterproc .and. any(TUnit_lake_t%lake_flg >= 1)) then
+             write(iulog,FORMR) trim(subname),' read tlake_drainage_area in t-lake', &
+                 minval(TUnit_lake_t%A_local, mask=TUnit_lake_t%lake_flg >= 1), &
+                 maxval(TUnit_lake_t%A_local, mask=TUnit_lake_t%lake_flg >= 1)
+         end if
          call shr_sys_flush(iulog)
 
          ier = pio_inq_varid(ncid, 'tlake_fhA_a', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%para_a, ier)
-         if (masterproc) write(iulog,FORMR) trim(subname),' read para_a in t-lake',minval(TUnit_lake_t%para_a),maxval(TUnit_lake_t%para_a)
+         if (masterproc .and. any(TUnit_lake_t%lake_flg >= 1)) then
+             write(iulog,FORMR) trim(subname),' read para_a in t-lake', &
+                 minval(TUnit_lake_t%para_a, mask=TUnit_lake_t%lake_flg >= 1), &
+                 maxval(TUnit_lake_t%para_a, mask=TUnit_lake_t%lake_flg >= 1)
+         end if
          call shr_sys_flush(iulog)
          
          ier = pio_inq_varid(ncid, 'tlake_fhA_b', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%para_b, ier)
-         if (masterproc) write(iulog,FORMR) trim(subname),' read para_b in t-lake',minval(TUnit_lake_t%para_b),maxval(TUnit_lake_t%para_b)
+         if (masterproc .and. any(TUnit_lake_t%lake_flg >= 1)) then
+             write(iulog,FORMR) trim(subname),' read para_b in t-lake', &
+                 minval(TUnit_lake_t%para_b, mask=TUnit_lake_t%lake_flg >= 1), &
+                 maxval(TUnit_lake_t%para_b, mask=TUnit_lake_t%lake_flg >= 1)
+         end if
          call shr_sys_flush(iulog)
          
          do iunit = rtmCTL%begr, rtmCTL%endr
@@ -5344,9 +5367,14 @@ contains
                  if(TUnit_lake_t%elev(iunit) <TINYVALUE) then
                      TUnit_lake_t%elev(iunit) = 0._r8
                  end if
-             else
+             end if
+             if (TUnit_lake_t%lake_flg(iunit) < 1) then
                  TUnit_lake_t%V_max(iunit) = 0._r8
                  TUnit_lake_t%A_max(iunit) = 0._r8
+                 TUnit_lake_t%A_local(iunit) = 0._r8
+                 TUnit_lake_t%F_local(iunit) = 0._r8
+                 TUnit_lake_t%para_a(iunit) = 0._r8
+                 TUnit_lake_t%para_b(iunit) = 0._r8
              end if
      if(rtmCTL%latc(iunit)==29.75 .and. rtmCTL%lonc(iunit)==-90.25) then
      !if(rtmCTL%latc(iunit)==-4.25 .and. rtmCTL%lonc(iunit)==-63.25) then 

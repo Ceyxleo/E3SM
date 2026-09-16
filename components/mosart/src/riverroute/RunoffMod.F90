@@ -179,13 +179,29 @@ module RunoffMod
      real(r8), pointer :: lake_r_prcp_nt1(:)
      real(r8), pointer :: lake_r_Vtot_nt1(:)
      real(r8), pointer :: lake_r_Asur_nt1(:)
-     real(r8), pointer :: lake_r_Tsur_nt1(:)     
+     real(r8), pointer :: lake_r_Tsur_nt1(:)
+     real(r8), pointer :: lake_r_egap_nt1(:)
+     real(r8), pointer :: lake_r_egap_ice_nt1(:)
+     real(r8), pointer :: lake_r_fice_nt1(:)
+     real(r8), pointer :: lake_r_hice_nt1(:)
+     real(r8), pointer :: lake_r_fsnow_nt1(:)
+     real(r8), pointer :: lake_r_hsnow_nt1(:)
+     real(r8), pointer :: lake_r_ticesurf_nt1(:)
+     real(r8), pointer :: lake_r_ficespur_nt1(:)
      real(r8), pointer :: lake_t_evap_nt1(:)
      real(r8), pointer :: lake_t_prcp_nt1(:)
      real(r8), pointer :: lake_t_Vtot_nt1(:)
      real(r8), pointer :: lake_t_Asur_nt1(:)
-     real(r8), pointer :: lake_t_Tsur_nt1(:)     
- 
+     real(r8), pointer :: lake_t_Tsur_nt1(:)
+     real(r8), pointer :: lake_t_egap_nt1(:)
+     real(r8), pointer :: lake_t_egap_ice_nt1(:)
+     real(r8), pointer :: lake_t_fice_nt1(:)
+     real(r8), pointer :: lake_t_hice_nt1(:)
+     real(r8), pointer :: lake_t_fsnow_nt1(:)
+     real(r8), pointer :: lake_t_hsnow_nt1(:)
+     real(r8), pointer :: lake_t_ticesurf_nt1(:)
+     real(r8), pointer :: lake_t_ficespur_nt1(:)
+
      real(r8), pointer :: ssh(:)
      real(r8), pointer :: yr_nt1(:)
      
@@ -590,7 +606,8 @@ module RunoffMod
      real(r8), pointer :: ddz_local(:)     ! (nunit) initlal layer thickness to be used to calculate layer thickness limit
      real(r8), pointer :: enr_0(:,:)       ! (nunit,nlayers) Initial inner energy(J/s,W)
      integer,  pointer :: J_Min(:)         ! (nunit) Index of the lowest layer for outflow (-)
-     !! fluxes    
+     logical,  pointer :: is_dry(:)        ! (nunit) lake has dried out; storage held at exactly zero until inflow returns
+     !! fluxes
      real(r8), pointer :: lake_inflow(:)   ! (nunit) lake inflow (m3/s)
      real(r8), pointer :: lake_outflow(:)  ! (nunit) lake outflow under normal conditions (m3/s)
      real(r8), pointer :: lake_spillflow(:)! (nunit) additional lake outflow when storage capacity exceeded (m3/s)
@@ -604,7 +621,22 @@ module RunoffMod
      real(r8), pointer :: lake_prcp_avg(:) ! (nunit) lake precipitation, average (m3/s)
      real(r8), pointer :: lake_Asur_avg(:) ! (nunit) lake surface area, average (m2)
      real(r8), pointer :: lake_Tsur_avg(:) ! (nunit) lake surface temperature, average (K)
-     
+     ! Non-conservative energy introduced by enforcing the freezing point in solve_r/solve_t.
+     ! Positive = energy the model had to invent to keep layers at/above 273.15 K, i.e. the
+     ! heat loss that real ice formation would have absorbed. Divide by rho_ice*L_fusion
+     ! (3.06e8 J/m3) to read it as an equivalent ice growth rate.
+     real(r8), pointer :: lake_egap(:)     ! (nunit) freezing-point energy gap (W/m2)
+     ! Prescribed snow/ice state, interpolated to the current date from the driver file.
+     ! One-way boundary condition: never fed back to the emulator, never in the restart.
+     real(r8), pointer :: lake_ice_fraction(:)  ! (nunit) ice areal fraction (-)
+     real(r8), pointer :: lake_ice_depth(:)     ! (nunit) ice thickness (m)
+     real(r8), pointer :: lake_snow_fraction(:) ! (nunit) snow-covered fraction (-)
+     real(r8), pointer :: lake_snow_depth(:)    ! (nunit) snow depth on ice (m)
+     real(r8), pointer :: lake_dhice_dt(:)      ! (nunit) d(ice thickness)/dt (m/s), for a future latent-heat term
+     real(r8), pointer :: lake_t_ice_surf(:)    ! (nunit) diagnostic ice surface temperature (K)
+     real(r8), pointer :: lake_fice_spur(:)     ! (nunit) ice fraction prescribed on water warmer than 4 degC (-)
+     real(r8), pointer :: lake_egap_avg(:) ! (nunit) freezing-point energy gap, average (W/m2)
+
   end type TstatusFlux_lake
  
   ! parameters to be calibrated. Ideally, these parameters are supposed to be uniform for one region
@@ -830,6 +862,14 @@ contains
                rtmCTL%lake_r_Vtot_nt1(begr:endr),                 &
                rtmCTL%lake_r_Asur_nt1(begr:endr),                 &
                rtmCTL%lake_r_Tsur_nt1(begr:endr),                 &
+               rtmCTL%lake_r_egap_nt1(begr:endr),                 &
+               rtmCTL%lake_r_egap_ice_nt1(begr:endr),             &
+               rtmCTL%lake_r_fice_nt1(begr:endr),                 &
+               rtmCTL%lake_r_hice_nt1(begr:endr),                 &
+               rtmCTL%lake_r_fsnow_nt1(begr:endr),                &
+               rtmCTL%lake_r_hsnow_nt1(begr:endr),                &
+               rtmCTL%lake_r_ticesurf_nt1(begr:endr),             &
+               rtmCTL%lake_r_ficespur_nt1(begr:endr),             &
                !rtmCTL%V_lake(begr:endr,nlayers+1),              &
                !rtmCTL%T_lake(begr:endr,nlayers+1),              &
                !rtmCTL%H_lake(begr:endr,nlayers+1),              &
@@ -843,7 +883,15 @@ contains
       rtmCTL%lake_r_Vtot_nt1(:)    = 0._r8
       rtmCTL%lake_r_Asur_nt1(:)    = 0._r8
       rtmCTL%lake_r_Tsur_nt1(:)    = 273.15_r8
-      
+      rtmCTL%lake_r_egap_nt1(:)    = 0._r8
+      rtmCTL%lake_r_egap_ice_nt1(:) = 0._r8
+      rtmCTL%lake_r_fice_nt1(:)    = 0._r8
+      rtmCTL%lake_r_hice_nt1(:)    = 0._r8
+      rtmCTL%lake_r_fsnow_nt1(:)   = 0._r8
+      rtmCTL%lake_r_hsnow_nt1(:)   = 0._r8
+      rtmCTL%lake_r_ticesurf_nt1(:)    = 0._r8
+      rtmCTL%lake_r_ficespur_nt1(:)    = 0._r8
+
 	  !allocate(Lake_out(nlayers)) 
 	  do inl=1,nlayers
 	      allocate(Lake_r_out(inl)%V_lake(begr:endr))
@@ -856,6 +904,14 @@ contains
                rtmCTL%lake_t_Vtot_nt1(begr:endr),                 &
                rtmCTL%lake_t_Asur_nt1(begr:endr),                 &
                rtmCTL%lake_t_Tsur_nt1(begr:endr),                 &
+               rtmCTL%lake_t_egap_nt1(begr:endr),                 &
+               rtmCTL%lake_t_egap_ice_nt1(begr:endr),             &
+               rtmCTL%lake_t_fice_nt1(begr:endr),                 &
+               rtmCTL%lake_t_hice_nt1(begr:endr),                 &
+               rtmCTL%lake_t_fsnow_nt1(begr:endr),                &
+               rtmCTL%lake_t_hsnow_nt1(begr:endr),                &
+               rtmCTL%lake_t_ticesurf_nt1(begr:endr),             &
+               rtmCTL%lake_t_ficespur_nt1(begr:endr),             &
                !rtmCTL%V_lake(begr:endr,nlayers+1),              &
                !rtmCTL%T_lake(begr:endr,nlayers+1),              &
                !rtmCTL%H_lake(begr:endr,nlayers+1),              &
@@ -869,6 +925,14 @@ contains
       rtmCTL%lake_t_Vtot_nt1(:)    = 0._r8
       rtmCTL%lake_t_Asur_nt1(:)    = 0._r8
       rtmCTL%lake_t_Tsur_nt1(:)    = 273.15_r8
+      rtmCTL%lake_t_egap_nt1(:)    = 0._r8
+      rtmCTL%lake_t_egap_ice_nt1(:) = 0._r8
+      rtmCTL%lake_t_fice_nt1(:)    = 0._r8
+      rtmCTL%lake_t_hice_nt1(:)    = 0._r8
+      rtmCTL%lake_t_fsnow_nt1(:)   = 0._r8
+      rtmCTL%lake_t_hsnow_nt1(:)   = 0._r8
+      rtmCTL%lake_t_ticesurf_nt1(:)    = 0._r8
+      rtmCTL%lake_t_ficespur_nt1(:)    = 0._r8
       
 	  !allocate(Lake_out(nlayers)) 
 	  do inl=1,nlayers

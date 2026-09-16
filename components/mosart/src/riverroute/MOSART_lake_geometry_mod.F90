@@ -8,12 +8,34 @@ MODULE MOSART_lake_geometry_mod
     use shr_kind_mod  , only : r8 => shr_kind_r8
     use shr_sys_mod   , only : shr_sys_abort
     use RunoffMod     , only : Tctl, TUnit, TRunoff, THeat, TUnit_lake_r, TLake_r, TUnit_lake_t, TLake_t, TPara, rtmCTL
-    use RtmVar        , only : iulog, ngeom, nlayers, rstraflag, lakeflag
+    use RtmVar        , only : iulog, ngeom, nlayers, rstraflag, lakeflag, lake_temp_scheme
 
     implicit none
     private
 
     real(r8), parameter :: TINYVALUE = 1.0e-14_r8  ! double precision variable has a significance of about 16 decimal digits
+
+    ! ------------------------------------------------------------------
+    ! Vertical remapping band for the Lagrangian lake layers.  These used to be
+    ! duplicated as locals in lakegeom_init_{r,t} (lk_ddz_top, lk_ddz_min) and again
+    ! in MOSART_lake_{r,t}_mod (lk_ddz_min, ddz_top_min, ddz_top_max), and the two
+    ! copies disagreed: the initial top layer was 3 m, BELOW the 5 m top-layer
+    ! merge threshold, so every multi-layer lake merged its top layer on the
+    ! very first sub-step and came back with a top layer of lk_ddz_top+ddz_interior.
+    ! For a deep lake that is tens of metres and immediately triggered a run of
+    ! splits -- the mechanism that drove d_ns into the nlayers abort in
+    ! mosart_lake_v1_smoke (job 57145589).  lk_ddz_top is now the log-centre of
+    ! [lk_ddz_top_min, lk_ddz_top_max] (sqrt(5*15)=8.66 -> 8 m), so the initial
+    ! grid already satisfies the runtime invariant: no start-up merge or split.
+    ! Prefixed lk_ because RtmMod has its own unrelated lk_ddz_top for WRM dams.
+    real(r8), public, parameter :: lk_ddz_top     =  8._r8  ! initial top layer thickness (m)
+    real(r8), public, parameter :: lk_ddz_top_min =  5._r8  ! merge top layer at or below this (m)
+    real(r8), public, parameter :: lk_ddz_top_max = 15._r8  ! split top layer above this (m)
+    real(r8), public, parameter :: lk_ddz_min     =  5._r8  ! merge interior layer at or below this (m)
+    integer,  public, parameter :: lk_max_remap   =  8      ! max remap iterations per sub-step
+    integer,  public, parameter :: lk_nlog_max    = 50      ! throttle for the remap warnings
+    integer,  public, save      :: nlog_split_blocked = 0   ! splits refused at the nlayers cap
+    integer,  public, save      :: nlog_coarsen       = 0   ! bottom coarsenings used to free a slot
 
 ! !PUBLIC MEMBER FUNCTIONS:
 
@@ -44,8 +66,6 @@ MODULE MOSART_lake_geometry_mod
       real(r8),dimension(ngeom+1) :: d_zi0,v_zti0,a_di0
       real(r8) ::dd_zz(ngeom),a_dd(ngeom+1),a_zi(ngeom+1),C_aa(ngeom+1), ar_f = 1.0e6                 ! Factor to convert area to m^2
       real(r8) :: pi      = 3.1415926_r8      ! pi
-      real(r8) :: ddz_top    = 3._r8  !2._r8        !0.60_r8                                                   ! Surface layer depth (m)
-      real(r8) :: ddz_min    = 5._r8        !minimum layer depth allowed to ensure numerical stability (m)
       real(r8) :: dv,da,dz
       real(r8) :: d_v(nlayers)                           ! Reservoir volume change at layer (m^3)
       real(r8) :: rho_z(nlayers)                           ! Reservoir layer density (kg/m^3), taken constant for furture revision 
@@ -105,17 +125,19 @@ MODULE MOSART_lake_geometry_mod
                end do
                
     
-               ! treating shallow or high-latitude lakes as single-layer ones (latter can be relaxed when adding a lake-ice module)
+               ! High-latitude lakes were collapsed to a single layer as a stand-in for the missing
+               ! lake-ice module. Only 'legacy' keeps that; the other schemes leave one_layer at 0 so
+               ! the layer count follows the geometry alone.
                !if(TLake_r%d_ns(iunit) == 1 .or. TUnit_lake_r%h_lake(iunit) <=10._r8 .or. abs(rtmCTL%latc(iunit)) >=40._r8) then
-               if(abs(rtmCTL%latc(iunit)) >=40._r8) then
+               if(trim(lake_temp_scheme) == 'legacy' .and. abs(rtmCTL%latc(iunit)) >=40._r8) then
                    TUnit_lake_r%one_layer(iunit) = 1
                end if
                
                ! adjust total number of layers to avoid too small initial layer depth
                if(TLake_r%d_ns(iunit) >= 2) then
-                   TLake_r%ddz_local(iunit) = (TLake_r%d_lake(iunit) - ddz_top) / (TLake_r%d_ns(iunit) - 1)
-                   if (TLake_r%ddz_local(iunit) - ddz_min < -TINYVALUE) then
-                       tmp_d_ns = floor((TLake_r%d_lake(iunit) - ddz_top)/ddz_min)
+                   TLake_r%ddz_local(iunit) = (TLake_r%d_lake(iunit) - lk_ddz_top) / (TLake_r%d_ns(iunit) - 1)
+                   if (TLake_r%ddz_local(iunit) - lk_ddz_min < -TINYVALUE) then
+                       tmp_d_ns = floor((TLake_r%d_lake(iunit) - lk_ddz_top)/lk_ddz_min)
                        if(tmp_d_ns <= 1) then
                            TLake_r%d_ns(iunit) = 1
                        else
@@ -133,15 +155,21 @@ MODULE MOSART_lake_geometry_mod
                     if (j == TLake_r%d_ns(iunit) .and. TLake_r%d_ns(iunit) == 1) then
                           TLake_r%dd_z(iunit,j) = TLake_r%d_lake(iunit)
                     elseif (j == TLake_r%d_ns(iunit) .and. TLake_r%d_ns(iunit) > 1) then !top layer depth kept constant
-                          TLake_r%dd_z(iunit,j) = ddz_top        !0.6_r8
+                          TLake_r%dd_z(iunit,j) = lk_ddz_top        !0.6_r8
                     elseif ((TLake_r%d_ns(iunit)>1 .and.j < TLake_r%d_ns(iunit)).and.(TLake_r%d_lake(iunit) - TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)))>0._r8) then
                           TLake_r%dd_z(iunit,j) = (TLake_r%d_lake(iunit) - TLake_r%dd_z(iunit,TLake_r%d_ns(iunit))) / (TLake_r%d_ns(iunit) - 1) !bottom layers evenly descritized
                     endif
                end do    
                  
                if (TLake_r%d_ns(iunit)>1) then 
-                   if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)-1)<ddz_top) then !layer thickness too small
-                        TLake_r%d_ns(iunit)=int((TLake_r%d_lake(iunit)/ddz_top)+1) 
+                   if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)-1)<lk_ddz_top) then !layer thickness too small
+                        ! min(): this branch has no other bound and dd_z/temp_lake are
+                        ! only dimensioned nlayers.  It became REACHABLE when lk_ddz_top
+                        ! went 3 -> 8 m: the step-3 reduction only guarantees the interior
+                        ! thickness >= lk_ddz_min (5 m), so an interior layer in [5,8) now
+                        ! trips the dd_z(d_ns-1) < lk_ddz_top test below.  The cap is
+                        ! therefore load-bearing, not belt-and-braces.
+                        TLake_r%d_ns(iunit)=min(int((TLake_r%d_lake(iunit)/lk_ddz_top)+1), nlayers-1) 
                         do j=1,nlayers!TLake_r%d_ns(iunit)
                             TLake_r%dd_z(iunit,j) = 0._r8
                         end do
@@ -149,7 +177,7 @@ MODULE MOSART_lake_geometry_mod
                         ! Reinitialize layer thickness
                         do j = TLake_r%d_ns(iunit),1,-1
                             if (j == TLake_r%d_ns(iunit)) then
-                                TLake_r%dd_z(iunit,j) = ddz_top      !top layer depth
+                                TLake_r%dd_z(iunit,j) = lk_ddz_top      !top layer depth
                             else
                                 TLake_r%dd_z(iunit,j) = (TLake_r%d_lake(iunit) - TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)))/(TLake_r%d_ns(iunit) - 1) !bottom layers evenly descritized
                             end if
@@ -233,8 +261,6 @@ MODULE MOSART_lake_geometry_mod
       real(r8),dimension(ngeom+1) :: d_zi0,v_zti0,a_di0
       real(r8) ::dd_zz(ngeom),a_dd(ngeom+1),a_zi(ngeom+1),C_aa(ngeom+1), ar_f = 1.0e6                 ! Factor to convert area to m^2
       real(r8) :: pi      = 3.1415926_r8      ! pi
-      real(r8) :: ddz_top    = 3._r8        !0.60_r8  top layer depth                                                 ! Surface layer depth (m)
-      real(r8) :: ddz_min    = 5._r8        !minimum layer depth allowed to ensure numerical stability (m)
       real(r8) :: dv,da,dz
       real(r8) :: d_v(nlayers)                           ! Reservoir volume change at layer (m^3)
       real(r8) :: rho_z(nlayers)                           ! Reservoir layer density (kg/m^3), taken constant for furture revision 
@@ -289,16 +315,18 @@ MODULE MOSART_lake_geometry_mod
                     TLake_t%v_zti(iunit,j) = v_zti0(j)   
                end do
                
-               ! treating shallow or high-latitude lakes as single-layer ones (latter can be relaxed when adding a lake-ice module)
-               if(abs(rtmCTL%latc(iunit)) >=40._r8) then 
+               ! High-latitude lakes were collapsed to a single layer as a stand-in for the missing
+               ! lake-ice module. Only 'legacy' keeps that; the other schemes leave one_layer at 0 so
+               ! the layer count follows the geometry alone.
+               if(trim(lake_temp_scheme) == 'legacy' .and. abs(rtmCTL%latc(iunit)) >=40._r8) then
                    TUnit_lake_t%one_layer(iunit) = 1
                end if
                
                ! adjust total number of layers to avoid too small initial layer depth
                if(TLake_t%d_ns(iunit) >= 2) then
-                   TLake_t%ddz_local(iunit) = (TLake_t%d_lake(iunit) - ddz_top) / (TLake_t%d_ns(iunit) - 1)
-                   if (TLake_t%ddz_local(iunit) - ddz_min < -TINYVALUE) then
-                       tmp_d_ns = floor((TLake_t%d_lake(iunit) - ddz_top)/ddz_min)
+                   TLake_t%ddz_local(iunit) = (TLake_t%d_lake(iunit) - lk_ddz_top) / (TLake_t%d_ns(iunit) - 1)
+                   if (TLake_t%ddz_local(iunit) - lk_ddz_min < -TINYVALUE) then
+                       tmp_d_ns = floor((TLake_t%d_lake(iunit) - lk_ddz_top)/lk_ddz_min)
                        if(tmp_d_ns <= 1) then
                            TLake_t%d_ns(iunit) = 1
                        else
@@ -316,15 +344,21 @@ MODULE MOSART_lake_geometry_mod
                     if (j == TLake_t%d_ns(iunit) .and. TLake_t%d_ns(iunit) == 1) then
                           TLake_t%dd_z(iunit,j) = TLake_t%d_lake(iunit)
                     elseif (j == TLake_t%d_ns(iunit) .and. TLake_t%d_ns(iunit) > 1) then !top layer depth kept constant
-                          TLake_t%dd_z(iunit,j) = ddz_top        !0.6_r8
+                          TLake_t%dd_z(iunit,j) = lk_ddz_top        !0.6_r8
                     elseif ((TLake_t%d_ns(iunit)>1 .and.j < TLake_t%d_ns(iunit)).and.(TLake_t%d_lake(iunit) - TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)))>0._r8) then
                           TLake_t%dd_z(iunit,j) = (TLake_t%d_lake(iunit) - TLake_t%dd_z(iunit,TLake_t%d_ns(iunit))) / (TLake_t%d_ns(iunit) - 1) !bottom layers evenly descritized
                     endif
                end do    
                  
                if (TLake_t%d_ns(iunit)>1) then 
-                   if (TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1)<ddz_top) then !layer thickness too small
-                        TLake_t%d_ns(iunit)=int((TLake_t%d_lake(iunit)/ddz_top)+1) 
+                   if (TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)-1)<lk_ddz_top) then !layer thickness too small
+                        ! min(): this branch has no other bound and dd_z/temp_lake are
+                        ! only dimensioned nlayers.  It became REACHABLE when lk_ddz_top
+                        ! went 3 -> 8 m: the step-3 reduction only guarantees the interior
+                        ! thickness >= lk_ddz_min (5 m), so an interior layer in [5,8) now
+                        ! trips the dd_z(d_ns-1) < lk_ddz_top test below.  The cap is
+                        ! therefore load-bearing, not belt-and-braces.
+                        TLake_t%d_ns(iunit)=min(int((TLake_t%d_lake(iunit)/lk_ddz_top)+1), nlayers-1) 
                         do j=1,nlayers!TLake_t%d_ns(iunit)
                             TLake_t%dd_z(iunit,j) = 0._r8
                         end do
@@ -332,7 +366,7 @@ MODULE MOSART_lake_geometry_mod
                         ! Reinitialize layer thickness
                         do j = TLake_t%d_ns(iunit),1,-1
                             if (j == TLake_t%d_ns(iunit)) then
-                                TLake_t%dd_z(iunit,j) = ddz_top      !top layer depth
+                                TLake_t%dd_z(iunit,j) = lk_ddz_top      !top layer depth
                             else
                                 TLake_t%dd_z(iunit,j) = (TLake_t%d_lake(iunit) - TLake_t%dd_z(iunit,TLake_t%d_ns(iunit)))/(TLake_t%d_ns(iunit) - 1) !bottom layers evenly descritized
                             end if
@@ -765,7 +799,7 @@ MODULE MOSART_lake_geometry_mod
 
     subroutine layer_merge_r(iunit,i)
 !*******************************************************************************************************
-!     Merge non-top layer if the thickness is less than threshold ddz_min 
+!     Merge non-top layer if the thickness is less than threshold lk_ddz_min 
 !*******************************************************************************************************   
         use shr_sys_mod , only : shr_sys_flush
         use RtmVar         , only : iulog, ngeom, nlayers
@@ -860,16 +894,12 @@ MODULE MOSART_lake_geometry_mod
            write(iulog,*) 'Error in lake layer merging ! ', iunit, TLake_r%d_ns(iunit)
            call shr_sys_abort('mosart-lake: no layers in the lake')           
         end if
-        if (TLake_r%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_r%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
-        end if
 
     end subroutine layer_merge_r
 
     subroutine layer_merge_t(iunit,i)
 !*******************************************************************************************************
-!     Merge non-top layer if the thickness is less than threshold ddz_min 
+!     Merge non-top layer if the thickness is less than threshold lk_ddz_min 
 !*******************************************************************************************************   
         use shr_sys_mod , only : shr_sys_flush
         use RtmVar         , only : iulog, ngeom, nlayers
@@ -964,10 +994,6 @@ MODULE MOSART_lake_geometry_mod
            write(iulog,*) 'Error in lake layer merging ! ', iunit, TLake_t%d_ns(iunit)
            call shr_sys_abort('mosart-lake: no layers in the lake')           
         end if
-        if (TLake_t%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_t%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
-        end if
 
     end subroutine layer_merge_t
 
@@ -1037,10 +1063,6 @@ MODULE MOSART_lake_geometry_mod
         if (TLake_r%d_ns(iunit)<1) then
            write(iulog,*) 'Error in lake top layer merging ! ', iunit, TLake_r%d_ns(iunit)
            call shr_sys_abort('mosart-lake: no layers in the lake')           
-        end if
-        if (TLake_r%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_r%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
         end if
 
         !v_sum2 = TLake_r%v_zt(iunit, 1)
@@ -1131,10 +1153,6 @@ MODULE MOSART_lake_geometry_mod
            write(iulog,*) 'Error in lake top layer merging ! ', iunit, TLake_t%d_ns(iunit)
            call shr_sys_abort('mosart-lake: no layers in the lake')           
         end if
-        if (TLake_t%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_t%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
-        end if
 
         !v_sum2 = TLake_t%v_zt(iunit, 1)
         !d_sum = 0_r8
@@ -1172,6 +1190,20 @@ MODULE MOSART_lake_geometry_mod
         real(r8) :: v_sum1, d_sum1, v_sum2, d_sum2 ! total lake volume [m^3]
         
         myTINYVALUE = 1e-6_r8
+
+        ! Refuse instead of aborting.  dd_z/temp_lake are dimensioned nlayers and
+        ! the renumbering below writes d_z/a_d/v_zt at d_ns+2 (dimensioned
+        ! nlayers+1), so d_ns must stay <= nlayers-1 after the increment.  The
+        ! caller degrades gracefully -- the layer just stays thick -- instead of
+        ! killing the run.
+        if (TLake_r%d_ns(iunit) >= nlayers-1) then
+            if (nlog_split_blocked < lk_nlog_max) then
+                nlog_split_blocked = nlog_split_blocked + 1
+                write(iulog,*) 'mosart-lake r: split refused at layer cap, iunit=', iunit, &
+                               ' d_ns=', TLake_r%d_ns(iunit), ' dd_z=', TLake_r%dd_z(iunit,i)
+            end if
+            return
+        end if
         
         !v_sum1 = sum(TLake_r%d_v(iunit,:))
         !d_sum1 = sum(TLake_r%dd_z(iunit,:))
@@ -1218,11 +1250,6 @@ MODULE MOSART_lake_geometry_mod
  !    write(unit=1013,fmt="(i4, i10, 10(e14.6))") 2, TLake_r%d_ns(iunit), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2), TLake_r%dd_z(iunit,3), TLake_r%d_v(iunit,1), TLake_r%d_v(iunit,2), TLake_r%d_v(iunit,3), TLake_r%v_zt(iunit,1), TLake_r%v_zt(iunit,2), TLake_r%v_zt(iunit,3), TLake_r%v_zt(iunit,4)
  !end if
 
-        if (TLake_r%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_r%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
-        end if
-       
     end subroutine layer_split_r
 
     subroutine layer_split_t(iunit,i)
@@ -1240,6 +1267,20 @@ MODULE MOSART_lake_geometry_mod
         real(r8) :: v_sum1, d_sum1, v_sum2, d_sum2 ! total lake volume [m^3]
         
         myTINYVALUE = 1e-6_r8
+
+        ! Refuse instead of aborting.  dd_z/temp_lake are dimensioned nlayers and
+        ! the renumbering below writes d_z/a_d/v_zt at d_ns+2 (dimensioned
+        ! nlayers+1), so d_ns must stay <= nlayers-1 after the increment.  The
+        ! caller degrades gracefully -- the layer just stays thick -- instead of
+        ! killing the run.
+        if (TLake_t%d_ns(iunit) >= nlayers-1) then
+            if (nlog_split_blocked < lk_nlog_max) then
+                nlog_split_blocked = nlog_split_blocked + 1
+                write(iulog,*) 'mosart-lake t: split refused at layer cap, iunit=', iunit, &
+                               ' d_ns=', TLake_t%d_ns(iunit), ' dd_z=', TLake_t%dd_z(iunit,i)
+            end if
+            return
+        end if
         
         !v_sum1 = sum(TLake_t%d_v(iunit,:))
         !d_sum1 = sum(TLake_t%dd_z(iunit,:))
@@ -1277,11 +1318,6 @@ MODULE MOSART_lake_geometry_mod
         !v_sum2 = sum(TLake_t%d_v(iunit,:))
         !d_sum2 = sum(TLake_t%dd_z(iunit,:))
 
-        if (TLake_t%d_ns(iunit)>=nlayers) then
-           write(iulog,*) 'Error in lake layer splitting ! ', iunit, TLake_t%d_ns(iunit)
-           call shr_sys_abort('mosart-lake: too many layers in the lake')           
-        end if
-       
     end subroutine layer_split_t
       
   function lake_h2a(h,para_a,para_b) result(area_)

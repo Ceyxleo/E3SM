@@ -275,6 +275,22 @@ contains
        call RtmHistAddfld (fname='R_LAKE_TSUR', units='Kelvin',  &
             avgflag='A', long_name='MOSART mainchannel-lake surface temperature', &
             ptr_rof=rtmCTL%lake_r_Tsur_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_EGAP', units='W/m2',  &
+            avgflag='A', long_name='MOSART mainchannel-lake freezing-point energy gap '// &
+            '(non-conservative heat added by the energy solver to hold liquid layers at or above 273.15K)', &
+            ptr_rof=rtmCTL%lake_r_egap_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_FICE', units='1',  &
+            avgflag='A', long_name='MOSART mainchannel-lake prescribed lake ice areal fraction (interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_r_fice_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_HICE', units='m',  &
+            avgflag='A', long_name='MOSART mainchannel-lake prescribed lake ice thickness (interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_r_hice_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_TICESURF', units='Kelvin',  &
+            avgflag='A', long_name='MOSART mainchannel-lake diagnostic ice surface temperature (bulk conductance to air; equals water temperature where there is no ice)', &
+            ptr_rof=rtmCTL%lake_r_ticesurf_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_FICESPUR', units='1',  &
+            avgflag='A', long_name='MOSART mainchannel-lake spurious ice: prescribed ice fraction on water warmer than 4 degC', &
+            ptr_rof=rtmCTL%lake_r_ficespur_nt1, default='active')
        
        allocate(tmp_array(rtmCTL%begr:rtmCTL%endr))      
        tmp_array = spval       
@@ -303,6 +319,22 @@ contains
        call RtmHistAddfld (fname='T_LAKE_TSUR', units='Kelvin',  &
             avgflag='A', long_name='MOSART tributary channel lake surface temperature', &
             ptr_rof=rtmCTL%lake_t_Tsur_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_EGAP', units='W/m2',  &
+            avgflag='A', long_name='MOSART tributary channel lake freezing-point energy gap '// &
+            '(non-conservative heat added by the energy solver to hold liquid layers at or above 273.15K)', &
+            ptr_rof=rtmCTL%lake_t_egap_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_FICE', units='1',  &
+            avgflag='A', long_name='MOSART tributary channel lake prescribed lake ice areal fraction (interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_t_fice_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_HICE', units='m',  &
+            avgflag='A', long_name='MOSART tributary channel lake prescribed lake ice thickness (interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_t_hice_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_TICESURF', units='Kelvin',  &
+            avgflag='A', long_name='MOSART tributary channel lake diagnostic ice surface temperature (bulk conductance to air; equals water temperature where there is no ice)', &
+            ptr_rof=rtmCTL%lake_t_ticesurf_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_FICESPUR', units='1',  &
+            avgflag='A', long_name='MOSART tributary channel lake spurious ice: prescribed ice fraction on water warmer than 4 degC', &
+            ptr_rof=rtmCTL%lake_t_ficespur_nt1, default='active')
        
        allocate(tmp_array(rtmCTL%begr:rtmCTL%endr))      
        tmp_array = spval       
@@ -315,6 +347,32 @@ contains
                 avgflag='A', long_name='MOSART tributary channel lake temperature at layer '//strNL, &
                 ptr_rof=lake_t_out(inl)%T_lake, default='active')
        end do       
+
+       ! Append new diagnostics so existing lake history-field indices remain unchanged.
+       call RtmHistAddfld (fname='R_LAKE_EGAP_ICE', units='m/s',  &
+            avgflag='A', long_name='MOSART mainchannel-lake total-area-equivalent ice growth rate implied by EGAP '// &
+            '(EGAP divided by ice density and latent heat of fusion; positive means equivalent ice growth)', &
+            ptr_rof=rtmCTL%lake_r_egap_ice_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_FSNOW', units='1',  &
+            avgflag='A', long_name='MOSART mainchannel-lake prescribed snow-covered fraction of total lake area '// &
+            '(interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_r_fsnow_nt1, default='active')
+       call RtmHistAddfld (fname='R_LAKE_HSNOW', units='m',  &
+            avgflag='A', long_name='MOSART mainchannel-lake prescribed snow depth on lake ice '// &
+            '(interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_r_hsnow_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_EGAP_ICE', units='m/s',  &
+            avgflag='A', long_name='MOSART tributary channel lake total-area-equivalent ice growth rate implied by EGAP '// &
+            '(EGAP divided by ice density and latent heat of fusion; positive means equivalent ice growth)', &
+            ptr_rof=rtmCTL%lake_t_egap_ice_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_FSNOW', units='1',  &
+            avgflag='A', long_name='MOSART tributary channel lake prescribed snow-covered fraction of total lake area '// &
+            '(interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_t_fsnow_nt1, default='active')
+       call RtmHistAddfld (fname='T_LAKE_HSNOW', units='m',  &
+            avgflag='A', long_name='MOSART tributary channel lake prescribed snow depth on lake ice '// &
+            '(interpolated from the monthly driver)', &
+            ptr_rof=rtmCTL%lake_t_hsnow_nt1, default='active')
        
     end if
  

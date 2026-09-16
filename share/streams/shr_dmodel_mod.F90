@@ -1343,6 +1343,21 @@ CONTAINS
              compare = .false.
           elseif (ni1 == 0) then   ! no offset, set nx to anything > 0
              nx = 1
+          elseif (lmethod == shr_dmodel_gGridCompareXYabs .or. &
+                  lmethod == shr_dmodel_gGridCompareXYrel) then
+             ! Same points, different starting longitude (e.g. a 0:360 stream
+             ! domain against a -180:180 model grid).  ni1 below is used only to
+             ! line the two grids up for the comparison -- it is never returned to
+             ! the caller and never applied to the data.  shr_strdata_init_mapping
+             ! turns a .true. from the XY methods into domaps=.false. and then
+             ! copies the stream field index-for-index, which silently rotates it
+             ! by ni1 cells: a full 180 degrees when ni1 is half the row length.
+             ! Report "not the same grid" so a real map gets built instead --
+             ! shr_map_mod wraps destination longitudes and handles the offset.
+             write(logunit,*) subname,'grids coincide only under a longitude rotation of ', &
+                              ni1,' cells; reporting not-identical so the caller maps ', &
+                              'instead of copying index-for-index'
+             compare = .false.
           else                     ! now compute ni2
              ! compute offset of grid1 compared to pt 1 of grid 2
              lon2 = mod(avG2%rAttr(nlon2,1)+1440.0_R8,360.0_R8)

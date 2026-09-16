@@ -27,6 +27,8 @@ for the CLM data in the CESM distribution
 <redirect_negative_qgwl>.false.</redirect_negative_qgwl>
 <rstraflag>.false.</rstraflag>
 <lakeflag>.false.</lakeflag>
+<lake_temp_scheme>energy</lake_temp_scheme>
+<lake_snowice_flag>.false.</lake_snowice_flag>
 <rinittemp>283.15</rinittemp>
 <ngeom>50</ngeom>
 <nlayers>30</nlayers>

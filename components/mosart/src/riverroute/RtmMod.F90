@@ -11,14 +11,16 @@ module RtmMod
 ! !USES:
   use shr_kind_mod    , only : r8 => shr_kind_r8
   use shr_sys_mod     , only : shr_sys_flush
-  use shr_const_mod   , only : SHR_CONST_PI, SHR_CONST_CDAY
+  use shr_const_mod   , only : SHR_CONST_PI, SHR_CONST_CDAY, SHR_CONST_RHOICE, SHR_CONST_LATICE
   use rof_cpl_indices , only : nt_rtm, rtm_tracers, KW, DW
   use seq_flds_mod    , only : rof_sed
   use RtmSpmd         , only : masterproc, npes, iam, mpicom_rof, ROFID, mastertask
   use shr_reprosum_mod, only : shr_reprosum_calc
+  use mosart_lake_snowice_mod, only : lake_snowice_init, lake_snowice_update
   use mpi
   use RtmVar          , only : re, spval, rtmlon, rtmlat, iulog, ice_runoff, &
-                               frivinp_rtm, frivinp_mesh, finidat_rtm, nrevsn_rtm,rstraflag,lakeflag,ngeom,nlayers,rinittemp, &
+                               frivinp_rtm, frivinp_mesh, finidat_rtm, nrevsn_rtm,rstraflag,lakeflag,lake_temp_scheme,ngeom,nlayers,rinittemp, &
+                               lake_snowice_flag, lake_snowice_driver_file, &
                                nsrContinue, nsrBranch, nsrStartup, nsrest, &
                                inst_index, inst_suffix, inst_name, wrmflag, inundflag, &
                                smat_option, decomp_option, barrier_timers, heatflag, sediflag, do_budget, &
@@ -284,7 +286,8 @@ contains
          rtmhist_ndens, rtmhist_mfilt, rtmhist_nhtfrq, &
          rtmhist_fincl1,  rtmhist_fincl2, rtmhist_fincl3, &
          rtmhist_fexcl1,  rtmhist_fexcl2, rtmhist_fexcl3, &
-         rtmhist_avgflag_pertape, decomp_option, wrmflag,rstraflag,lakeflag,ngeom,nlayers,rinittemp, &
+         rtmhist_avgflag_pertape, decomp_option, wrmflag,rstraflag,lakeflag,lake_temp_scheme,ngeom,nlayers,rinittemp, &
+         lake_snowice_flag, lake_snowice_driver_file, &
          inundflag, smat_option, delt_mosart, barrier_timers, do_budget, &
          RoutingMethod, DLevelH2R, DLevelR, sediflag, heatflag, data_bgc_fluxes_to_ocean_flag,redirect_negative_qgwl
 
@@ -301,6 +304,9 @@ contains
     wrmflag     = .false.
     rstraflag   = .false.
     lakeflag    = .false.
+    lake_temp_scheme = 'energy'
+    lake_snowice_flag = .false.
+    lake_snowice_driver_file = ' '
     rinittemp   = 283.15_r8
     ngeom       = 50  
     nlayers     = 30                  
@@ -381,6 +387,20 @@ contains
            write(iulog,*) 'lakeflag can only be effective when heatflag is set as .true.'
            lakeflag = .false.
        end if
+       if (lakeflag) then
+           if (trim(lake_temp_scheme) /= 'energy'    .and. &
+               trim(lake_temp_scheme) /= 'empirical' .and. &
+               trim(lake_temp_scheme) /= 'legacy') then
+               write(iulog,*) 'unknown lake_temp_scheme = ',trim(lake_temp_scheme), &
+                              ' ; expected energy, empirical or legacy'
+               call shr_sys_abort('mosart: invalid lake_temp_scheme')
+           end if
+           write(iulog,*) 'MOSART lake temperature scheme: ',trim(lake_temp_scheme)
+           if (lake_snowice_flag .and. len_trim(lake_snowice_driver_file) == 0) then
+               call shr_sys_abort('mosart: lake_snowice_flag is on but lake_snowice_driver_file is empty')
+           end if
+           write(iulog,*) 'MOSART prescribed lake snow/ice: ',lake_snowice_flag
+       end if
 
     end if
     
@@ -408,6 +428,9 @@ contains
     call mpi_bcast (do_budget,      1, MPI_INTEGER, 0, mpicom_rof, ier)
     call mpi_bcast (rstraflag,      1, MPI_LOGICAL, 0, mpicom_rof, ier)
     call mpi_bcast (lakeflag,        1, MPI_LOGICAL, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_temp_scheme, len(lake_temp_scheme), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_flag, 1, MPI_LOGICAL, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_driver_file, len(lake_snowice_driver_file), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (rinittemp,      1, MPI_REAL8, 0, mpicom_rof, ier)
     call mpi_bcast (ngeom,          1, MPI_INTEGER, 0, mpicom_rof, ier)
     call mpi_bcast (nlayers,        1, MPI_INTEGER, 0, mpicom_rof, ier)
@@ -2228,6 +2251,7 @@ contains
 
     real(r8) :: volr_init                   ! temporary storage to compute dvolrdt
     real(r8),parameter :: budget_tolerance = 1.0e-6   ! budget tolerance, m3/day
+    real(r8),parameter :: ice_volumetric_latent_heat = SHR_CONST_RHOICE * SHR_CONST_LATICE ! J/m3
     logical  :: abort                       ! abort flag
     real(r8) :: sum1,sum2
     integer  :: yr, mon, day, ymd, tod      ! time information
@@ -2333,6 +2357,22 @@ contains
       rtmCTL%lake_t_Asur_nt1 = spval
       rtmCTL%lake_t_Tsur_nt1 = spval
       rtmCTL%lake_t_Vtot_nt1 = spval
+      rtmCTL%lake_r_egap_nt1 = spval
+      rtmCTL%lake_r_egap_ice_nt1 = spval
+      rtmCTL%lake_r_fice_nt1 = spval
+      rtmCTL%lake_r_hice_nt1 = spval
+      rtmCTL%lake_r_fsnow_nt1 = spval
+      rtmCTL%lake_r_hsnow_nt1 = spval
+      rtmCTL%lake_r_ticesurf_nt1 = spval
+      rtmCTL%lake_r_ficespur_nt1 = spval
+      rtmCTL%lake_t_egap_nt1 = spval
+      rtmCTL%lake_t_egap_ice_nt1 = spval
+      rtmCTL%lake_t_fice_nt1 = spval
+      rtmCTL%lake_t_hice_nt1 = spval
+      rtmCTL%lake_t_fsnow_nt1 = spval
+      rtmCTL%lake_t_hsnow_nt1 = spval
+      rtmCTL%lake_t_ticesurf_nt1 = spval
+      rtmCTL%lake_t_ficespur_nt1 = spval
       do n = rtmCTL%begr,rtmCTL%endr
           if (TUnit_lake_r%lake_flg(n)>=1) then
               !rtmCTL%lake_evap_nt1 = 0._r8
@@ -2340,6 +2380,14 @@ contains
               rtmCTL%lake_r_Asur_nt1 = 0._r8
               rtmCTL%lake_r_Tsur_nt1 = 0._r8
               rtmCTL%lake_r_Vtot_nt1 = 0._r8
+              rtmCTL%lake_r_egap_nt1(n) = 0._r8
+              rtmCTL%lake_r_egap_ice_nt1(n) = 0._r8
+              rtmCTL%lake_r_fice_nt1(n) = 0._r8
+              rtmCTL%lake_r_hice_nt1(n) = 0._r8
+              rtmCTL%lake_r_fsnow_nt1(n) = 0._r8
+              rtmCTL%lake_r_hsnow_nt1(n) = 0._r8
+              rtmCTL%lake_r_ticesurf_nt1(n) = 0._r8
+              rtmCTL%lake_r_ficespur_nt1(n) = 0._r8
           end if
           if (TUnit_lake_t%lake_flg(n)>=1) then
               !rtmCTL%lake_evap_nt1 = 0._r8
@@ -2347,6 +2395,14 @@ contains
               rtmCTL%lake_t_Asur_nt1 = 0._r8
               rtmCTL%lake_t_Tsur_nt1 = 0._r8
               rtmCTL%lake_t_Vtot_nt1 = 0._r8
+              rtmCTL%lake_t_egap_nt1(n) = 0._r8
+              rtmCTL%lake_t_egap_ice_nt1(n) = 0._r8
+              rtmCTL%lake_t_fice_nt1(n) = 0._r8
+              rtmCTL%lake_t_hice_nt1(n) = 0._r8
+              rtmCTL%lake_t_fsnow_nt1(n) = 0._r8
+              rtmCTL%lake_t_hsnow_nt1(n) = 0._r8
+              rtmCTL%lake_t_ticesurf_nt1(n) = 0._r8
+              rtmCTL%lake_t_ficespur_nt1(n) = 0._r8
           end if
       end do
     end if
@@ -2948,12 +3004,14 @@ contains
                  rtmCTL%lake_r_prcp_nt1(n) = rtmCTL%lake_r_prcp_nt1(n) + TLake_r%lake_prcp_avg(n)
                  rtmCTL%lake_r_Asur_nt1(n) = rtmCTL%lake_r_Asur_nt1(n) + TLake_r%lake_Asur_avg(n)
                  rtmCTL%lake_r_Tsur_nt1(n) = rtmCTL%lake_r_Tsur_nt1(n) + TLake_r%lake_Tsur_avg(n)
+                 rtmCTL%lake_r_egap_nt1(n) = rtmCTL%lake_r_egap_nt1(n) + TLake_r%lake_egap_avg(n)
              end if
              if (TUnit_lake_t%lake_flg(n)>=1) then
                  rtmCTL%lake_t_evap_nt1(n) = rtmCTL%lake_t_evap_nt1(n) - TLake_t%lake_evap_avg(n)
                  rtmCTL%lake_t_prcp_nt1(n) = rtmCTL%lake_t_prcp_nt1(n) + TLake_t%lake_prcp_avg(n)
                  rtmCTL%lake_t_Asur_nt1(n) = rtmCTL%lake_t_Asur_nt1(n) + TLake_t%lake_Asur_avg(n)
                  rtmCTL%lake_t_Tsur_nt1(n) = rtmCTL%lake_t_Tsur_nt1(n) + TLake_t%lake_Tsur_avg(n)
+                 rtmCTL%lake_t_egap_nt1(n) = rtmCTL%lake_t_egap_nt1(n) + TLake_t%lake_egap_avg(n)
              end if
          enddo
        end if
@@ -3031,7 +3089,15 @@ contains
             rtmCTL%lake_r_prcp_nt1(n) = rtmCTL%lake_r_prcp_nt1(n) / float(nsub)
             rtmCTL%lake_r_Asur_nt1(n) = rtmCTL%lake_r_Asur_nt1(n) / float(nsub)
             rtmCTL%lake_r_Tsur_nt1(n) = rtmCTL%lake_r_Tsur_nt1(n) / float(nsub)
+            rtmCTL%lake_r_egap_nt1(n) = rtmCTL%lake_r_egap_nt1(n) / float(nsub)
+            rtmCTL%lake_r_egap_ice_nt1(n) = rtmCTL%lake_r_egap_nt1(n) / ice_volumetric_latent_heat
             rtmCTL%lake_r_Vtot_nt1(n) = TLake_r%V_str(n)
+            rtmCTL%lake_r_fice_nt1(n) = TLake_r%lake_ice_fraction(n)
+            rtmCTL%lake_r_hice_nt1(n) = TLake_r%lake_ice_depth(n)
+            rtmCTL%lake_r_fsnow_nt1(n) = TLake_r%lake_snow_fraction(n)
+            rtmCTL%lake_r_hsnow_nt1(n) = TLake_r%lake_snow_depth(n)
+            rtmCTL%lake_r_ticesurf_nt1(n) = TLake_r%lake_t_ice_surf(n)
+            rtmCTL%lake_r_ficespur_nt1(n) = TLake_r%lake_fice_spur(n)
             
             do i=1,nlayers            
                 Lake_r_out(i)%V_lake(n) = TLake_r%v_zt(n,i)
@@ -3043,6 +3109,14 @@ contains
             rtmCTL%lake_r_prcp_nt1(n) = 0._r8
             rtmCTL%lake_r_Asur_nt1(n) = spval
             rtmCTL%lake_r_Tsur_nt1(n) = spval
+            rtmCTL%lake_r_egap_nt1(n) = spval
+            rtmCTL%lake_r_egap_ice_nt1(n) = spval
+            rtmCTL%lake_r_fice_nt1(n) = spval
+            rtmCTL%lake_r_hice_nt1(n) = spval
+            rtmCTL%lake_r_fsnow_nt1(n) = spval
+            rtmCTL%lake_r_hsnow_nt1(n) = spval
+            rtmCTL%lake_r_ticesurf_nt1(n) = spval
+            rtmCTL%lake_r_ficespur_nt1(n) = spval
             rtmCTL%lake_r_Vtot_nt1(n) = spval
             do i=1,nlayers            
                 Lake_r_out(i)%V_lake(n) = spval
@@ -3058,7 +3132,15 @@ contains
             rtmCTL%lake_t_prcp_nt1(n) = rtmCTL%lake_t_prcp_nt1(n) / float(nsub)
             rtmCTL%lake_t_Asur_nt1(n) = rtmCTL%lake_t_Asur_nt1(n) / float(nsub)
             rtmCTL%lake_t_Tsur_nt1(n) = rtmCTL%lake_t_Tsur_nt1(n) / float(nsub)
+            rtmCTL%lake_t_egap_nt1(n) = rtmCTL%lake_t_egap_nt1(n) / float(nsub)
+            rtmCTL%lake_t_egap_ice_nt1(n) = rtmCTL%lake_t_egap_nt1(n) / ice_volumetric_latent_heat
             rtmCTL%lake_t_Vtot_nt1(n) = TLake_t%V_str(n)
+            rtmCTL%lake_t_fice_nt1(n) = TLake_t%lake_ice_fraction(n)
+            rtmCTL%lake_t_hice_nt1(n) = TLake_t%lake_ice_depth(n)
+            rtmCTL%lake_t_fsnow_nt1(n) = TLake_t%lake_snow_fraction(n)
+            rtmCTL%lake_t_hsnow_nt1(n) = TLake_t%lake_snow_depth(n)
+            rtmCTL%lake_t_ticesurf_nt1(n) = TLake_t%lake_t_ice_surf(n)
+            rtmCTL%lake_t_ficespur_nt1(n) = TLake_t%lake_fice_spur(n)
             
             do i=1,nlayers            
                 Lake_t_out(i)%V_lake(n) = TLake_t%v_zt(n,i)
@@ -3070,6 +3152,14 @@ contains
             rtmCTL%lake_t_prcp_nt1(n) = 0._r8
             rtmCTL%lake_t_Asur_nt1(n) = spval
             rtmCTL%lake_t_Tsur_nt1(n) = spval
+            rtmCTL%lake_t_egap_nt1(n) = spval
+            rtmCTL%lake_t_egap_ice_nt1(n) = spval
+            rtmCTL%lake_t_fice_nt1(n) = spval
+            rtmCTL%lake_t_hice_nt1(n) = spval
+            rtmCTL%lake_t_fsnow_nt1(n) = spval
+            rtmCTL%lake_t_hsnow_nt1(n) = spval
+            rtmCTL%lake_t_ticesurf_nt1(n) = spval
+            rtmCTL%lake_t_ficespur_nt1(n) = spval
             rtmCTL%lake_t_Vtot_nt1(n) = spval
             do i=1,nlayers            
                 Lake_t_out(i)%V_lake(n) = spval
@@ -5046,6 +5136,8 @@ contains
          TLake_r%enr_0 = 0._r8
          allocate (TLake_r%J_Min(begr:endr))
          TLake_r%J_Min = 0
+         allocate (TLake_r%is_dry(begr:endr))
+         TLake_r%is_dry = .false.
 
          allocate (TLake_r%lake_inflow(begr:endr))
          TLake_r%lake_inflow = 0._r8
@@ -5072,6 +5164,24 @@ contains
          TLake_r%lake_Asur_avg = 0._r8
          allocate (TLake_r%lake_Tsur_avg(begr:endr))
          TLake_r%lake_Tsur_avg = 273.15_r8
+         allocate (TLake_r%lake_egap(begr:endr))
+         TLake_r%lake_egap = 0._r8
+         allocate (TLake_r%lake_egap_avg(begr:endr))
+         TLake_r%lake_egap_avg = 0._r8
+         allocate (TLake_r%lake_ice_fraction(begr:endr))
+         TLake_r%lake_ice_fraction = 0._r8
+         allocate (TLake_r%lake_ice_depth(begr:endr))
+         TLake_r%lake_ice_depth = 0._r8
+         allocate (TLake_r%lake_snow_fraction(begr:endr))
+         TLake_r%lake_snow_fraction = 0._r8
+         allocate (TLake_r%lake_snow_depth(begr:endr))
+         TLake_r%lake_snow_depth = 0._r8
+         allocate (TLake_r%lake_dhice_dt(begr:endr))
+         TLake_r%lake_dhice_dt = 0._r8
+         allocate (TLake_r%lake_t_ice_surf(begr:endr))
+         TLake_r%lake_t_ice_surf = 273.15_r8
+         allocate (TLake_r%lake_fice_spur(begr:endr))
+         TLake_r%lake_fice_spur = 0._r8
 
          allocate (TUnit_lake_t%lake_flg(begr:endr))
          TUnit_lake_t%lake_flg = 0
@@ -5152,6 +5262,8 @@ contains
          TLake_t%enr_0 = 0._r8
          allocate (TLake_t%J_Min(begr:endr))
          TLake_t%J_Min = 0
+         allocate (TLake_t%is_dry(begr:endr))
+         TLake_t%is_dry = .false.
 
          allocate (TLake_t%lake_inflow(begr:endr))
          TLake_t%lake_inflow = 0._r8
@@ -5178,6 +5290,24 @@ contains
          TLake_t%lake_Asur_avg = 0._r8
          allocate (TLake_t%lake_Tsur_avg(begr:endr))
          TLake_t%lake_Tsur_avg = 273.15_r8
+         allocate (TLake_t%lake_egap(begr:endr))
+         TLake_t%lake_egap = 0._r8
+         allocate (TLake_t%lake_egap_avg(begr:endr))
+         TLake_t%lake_egap_avg = 0._r8
+         allocate (TLake_t%lake_ice_fraction(begr:endr))
+         TLake_t%lake_ice_fraction = 0._r8
+         allocate (TLake_t%lake_ice_depth(begr:endr))
+         TLake_t%lake_ice_depth = 0._r8
+         allocate (TLake_t%lake_snow_fraction(begr:endr))
+         TLake_t%lake_snow_fraction = 0._r8
+         allocate (TLake_t%lake_snow_depth(begr:endr))
+         TLake_t%lake_snow_depth = 0._r8
+         allocate (TLake_t%lake_dhice_dt(begr:endr))
+         TLake_t%lake_dhice_dt = 0._r8
+         allocate (TLake_t%lake_t_ice_surf(begr:endr))
+         TLake_t%lake_t_ice_surf = 273.15_r8
+         allocate (TLake_t%lake_fice_spur(begr:endr))
+         TLake_t%lake_fice_spur = 0._r8
          
          ier = pio_inq_varid(ncid, 'mlake_Mean_len', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_r%Length, ier)
@@ -5598,6 +5728,11 @@ contains
      write(iulog,*) subname,' numDT_t   = ',minval(Tunit%numDT_t),maxval(Tunit%numDT_t)
      write(iulog,*) subname,' numDT_t max  = ',numDT_t
   endif 
+
+  if (heatflag .and. lakeflag .and. lake_snowice_flag) then
+     call lake_snowice_init()
+     call lake_snowice_update()   ! fill the state before the first Rtmrun
+  end if
 
   end subroutine MOSART_init
 

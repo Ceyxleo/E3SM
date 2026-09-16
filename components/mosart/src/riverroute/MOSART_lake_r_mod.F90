@@ -14,7 +14,8 @@ MODULE mosart_lake_r_mod
     use RtmTimeManager
     use RunoffMod , only : Tctl, TUnit, TRunoff, THeat, TUnit_lake_r, TLake_r, TPara, rtmCTL
     use rof_cpl_indices, only : nt_nliq, nt_nice
-    use RtmVar         , only : iulog, ngeom, nlayers, rstraflag, lakeflag
+    use RtmVar         , only : iulog, ngeom, nlayers, rstraflag, lakeflag, lake_temp_scheme, lake_snowice_flag
+    use mosart_lake_snowice_mod, only : lake_ice_snow_bc
     use MOSART_heat_mod
     use MOSART_lake_hydro_mod
     use MOSART_lake_heat_mod
@@ -22,6 +23,13 @@ MODULE mosart_lake_r_mod
     implicit none
     private
     real(r8), parameter :: TINYVALUE  = 1.0e-14_r8  ! double precision variable has a significance of about 16 decimal digits
+
+    ! Bounded reporting for dry/refill transitions.  A lake fed by an intermittent trickle
+    ! can cycle dry->wet->dry repeatedly, so the log is capped per task: reaching the cap is
+    ! itself the diagnostic (a handful of events means the closed-basin lakes retired once,
+    ! hitting the cap means the dry threshold is too aggressive).
+    integer, parameter :: lk_dry_log_max = 500
+    integer :: lk_dry_log_r = 0
 
     public mosart_lake_r
     
@@ -108,25 +116,38 @@ MODULE mosart_lake_r_mod
         real(r8) :: mixvol1,mixvol2,sumvol,num,dem                              ! used in convective mixing
         real(r8) :: ta,tb,tab,dd_za,dd_zb,d_va,dv_oua,delta_a                   ! used in layer merging/split
         real(r8) :: dv_inb,dv_ina,dv_oub,dv_ouab,dv_inab,dd_zab,d_vab,d_vb      ! used in layer merging/split    
-        real(r8) :: ddz_min,ddz_max                                             ! (nd) Minimum and Maximum non-top layer thickness limit for merge/split
+        real(r8) :: ddz_max                                                     ! (nd) Maximum non-top layer thickness limit for splitting, scaled to this lake
+        integer  :: n_remap                                                     ! remap iterations used this sub-step
+        logical  :: remap_done                                                  ! layer-thickness invariant satisfied
         real(r8) :: tmp_evap, tmp_outflow, tmp_tout                             ! dummy variables for evaporation rate (m3/s), outflow(m3/s), outflow temperature (K) 
         integer  :: dflag                                                       ! number of sub hourly time step
-        real(r8) :: ddz_top_min,ddz_top_max                                     ! (nd) Minimum and Maximum top layer thickness limit for merge/split (m)
         real(r8) :: temp_prev                                                   ! lake surface temperature before advective mixing (Kelvin)
         real(r8) :: temp_equi                                                   ! lake surface temperature calculated using the euilibrium approach (Kelvin)
         real(r8) :: mytmp(14)                                                   ! inputs for calculating lake surface temperature calculated using the euilibrium approach
         integer  :: yr, mon, day, ymd, tod                                      ! time information
-        
+        logical  :: use_empirical                                               ! .true. -> Zhao & Gao equilibrium scheme for this lake this sub-timestep
+        real(r8), parameter :: ddz_lake_min = 0.01_r8                           ! min mean water depth (m) for the energy balance to be numerically meaningful
+        real(r8) :: evap_open                                                   ! evaporation per unit OPEN WATER area (m/s)
+        real(r8) :: fopen                                                       ! open-water fraction (-)
+        real(r8) :: q_open_non_sw                                               ! non-shortwave flux per unit open water (W/m2)
+        real(r8) :: lt_heat_open                                                ! latent heat per unit open water (W/m2)
+        real(r8) :: sh_net_to_water, non_sw_flux_to_water                       ! fluxes reaching the water, per unit TOTAL area (W/m2)
+        real(r8) :: wind_mix_factor                                             ! wind-mixing scaling by open-water fraction (-)
+        real(r8) :: t_ice_surf                                                  ! diagnostic ice surface temperature (K)
+        real(r8) :: V_now                                                       ! current lake storage above the geometry base (m3)
+        real(r8) :: V_dry                                                       ! storage below which the lake is declared dry (m3)
+
 !**************************************************************************************************************************************************
         
         if (nt == nt_nliq) then    ! Lake module active if there is natural lake
             ! Initialize for all sub-timesteps                                    
             s_dtime = 10
             dtime   = localDeltaT/s_dtime        !    Sub-timestep for numerical purpose
-            ddz_min = 5._r8
-            ddz_max = max(3.0_r8*TLake_r%ddz_local(iunit), 3.0_r8*ddz_min)
-            ddz_top_min = 5._r8 !1.5_r8 !ddz_min !1.5_r8
-            ddz_top_max = 3._r8 * ddz_top_min !4.0_r8
+            ! Interior split threshold, scaled to this lake's own vertical scale
+            ! (ddz_local is the initial interior layer thickness).  The top-layer
+            ! band and the interior merge threshold are module parameters shared
+            ! with lakegeom_init_* -- see MOSART_lake_geometry_mod.
+            ddz_max = max(3.0_r8*TLake_r%ddz_local(iunit), 3.0_r8*lk_ddz_min)
             t_in    = temp_Tr 
             tmp_outflow = 0._r8
             tmp_evap = 0._r8
@@ -135,7 +156,29 @@ MODULE mosart_lake_r_mod
             !TLake_r%lake_snow(iunit) = THeat%forc_snow(iunit) * TUnit_lake_r%A_max(iunit) * 1e6
             TLake_r%lake_inflow(iunit) = -TRunoff%erout(iunit,nt) !inflow does not change during sub timesteps                
             TLake_r%lake_Tsur(iunit) = THeat%Tr(iunit)
-            do ww = 1,s_dtime    ! Start calculation for each sub-timestep    ************************************************            
+            TLake_r%lake_egap(iunit) = 0._r8   ! accumulated in solve_r over the sub-timesteps (J), normalized below
+
+            ! A dried-out lake is revived as soon as water is offered again.  lake_inflow is
+            ! constant over the sub-timesteps, so this is decided once.  Lake precipitation
+            ! is intentionally disabled in the r-zone (see above), so inflow is the only
+            ! source that can bring an r-lake back.
+            if (TLake_r%is_dry(iunit)) then
+                ! Any strictly positive inflow revives the lake.  The test must stay at
+                ! "> 0" rather than "> some threshold": while is_dry short-circuits the
+                ! sub-timestep the lake contributes no outflow, so any inflow offered to a
+                ! skipped lake would be destroyed.  Reviving on > 0 means the skip only
+                ! ever happens when the supply is exactly zero, and nothing is lost.
+                if (TLake_r%lake_inflow(iunit) > 0._r8) then
+                    TLake_r%is_dry(iunit) = .false.
+                    if (lk_dry_log_r < lk_dry_log_max) then
+                        lk_dry_log_r = lk_dry_log_r + 1
+                        write(iulog,*) 'mosart-lake r: lake refilling, iunit=', iunit, &
+                             ' inflow=', TLake_r%lake_inflow(iunit)
+                    end if
+                end if
+            end if
+
+            do ww = 1,s_dtime    ! Start calculation for each sub-timestep    ************************************************
                 
                 !!======================== water balance processes   
     !if(iunit == 198841) then 
@@ -158,6 +201,12 @@ MODULE mosart_lake_r_mod
                 evap = 0._r8
                 d_evap = 0._r8
                 v_evap = 0._r8
+
+                ! Dry lake: all fluxes are zero for this sub-timestep and the state is
+                ! already snapped to exactly dry, so skip both the water and the energy
+                ! solver.  This also keeps a_d out of the divisions below.
+                if (TLake_r%is_dry(iunit)) cycle
+
                 d_n_n          = TLake_r%d_ns(iunit)                    ! carry number of layers if there is merging/split
                 d_res_sub      = TLake_r%d_lake(iunit)
                 do j = 1, nlayers+1    
@@ -190,7 +239,13 @@ MODULE mosart_lake_r_mod
                 v_prcp = d_prcp * TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)
                 t_s        = TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)) 
                 call QSat_str(t_s, THeat%forc_pbot(iunit),es)                
-                evap =  lake_evap_r(iunit,dtime,TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)),F,es,sar)
+                evap_open = lake_evap_r(iunit,dtime,TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)),F,es,sar)
+                if (lake_snowice_flag) then
+                    fopen = max(0._r8, min(1._r8, 1._r8 - TLake_r%lake_ice_fraction(iunit)))
+                else
+                    fopen = 1._r8
+                end if
+                evap = evap_open * fopen   ! water balance sees only the open fraction
                 d_evap = evap * dtime                
                 v_evap = d_evap * TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)
                 if (v_evap - 0.95_r8 * TLake_r%d_v(iunit, TLake_r%d_ns(iunit)) > TINYVALUE) then ! too little lake storage for lake evap. to occur fully
@@ -390,86 +445,98 @@ MODULE mosart_lake_r_mod
                     call under_flow_r(iunit,d_n_n,d_res_sub,t_z_old,dv_in,dv_ou)                        
                 end if
 
-                ! Adjust layers thickness for numerical stability                    
-                !    Check if any layers are too thin
-                if (TLake_r%d_ns(iunit) == 2) then
-                    if (TLake_r%dd_z(iunit,2) <= ddz_top_min .or. TLake_r%dd_z(iunit,1) <= ddz_min) then
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 11, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-                        call toplayer_merge_r(iunit)
-                    end if                                
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 12, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-                elseif(TLake_r%d_ns(iunit) > 2) then
-                    if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) <= ddz_top_min) then
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 21, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-                        call toplayer_merge_r(iunit)
-                    end if   
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 22, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-                    
-                    do i=1,TLake_r%d_ns(iunit)-1
-                        if (TLake_r%dd_z(iunit,i) <= ddz_min) then
-                            call layer_merge_r(iunit,i)
-                            exit ! only allow merging occur once per each time step
-                        end if                                
-                    end do                        
-                    ! repeat one more time in case any layer is still too thin after merging once (and layer number changed)
-                    do i=1,TLake_r%d_ns(iunit)-1
-                        if (TLake_r%dd_z(iunit,i) <= ddz_min) then
-                            call layer_merge_r(iunit,i)
-                            exit ! only allow merging occur once per each time step
-                        end if                                
-                    end do                        
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 23, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
+                ! ---- Lagrangian grid remap ---------------------------------------
+                ! Iterate until the layer-thickness invariant holds, instead of
+                ! making a fixed number of passes.  On leaving this block:
+                !     lk_ddz_top_min <  dd_z(d_ns) <= lk_ddz_top_max
+                !     lk_ddz_min     <  dd_z(j)    <  ddz_max        (j < d_ns)
+                !     d_ns           <= nlayers-1
+                ! The old version did 1 top pass + 2 interior passes per sub-step,
+                ! so the invariant could stay violated for many steps while the
+                ! layer count drifted monotonically in one direction.
+                n_remap = 0
+                do while (n_remap < lk_max_remap)
+                    remap_done = .true.
+                    ! d_ns==1 has to enter this block too.  Under the old ">1" guard
+                    ! the invariant was never evaluated for a single-layer lake, so
+                    ! remap_done stayed .true., the loop exited before the splitter
+                    ! below, and one layer was an absorbing state: a lake that had
+                    ! merged down to a single layer could never re-stratify however
+                    ! deep it later got.  A single layer has no merge partner, so
+                    ! only the too-thick half of the invariant is actionable for it;
+                    ! the too-thin test stays at d_ns>1 so that shallow one-layer
+                    ! lakes do not spin all lk_max_remap iterations every sub-step
+                    ! with nothing they can do about it.
+                    if (TLake_r%d_ns(iunit) >= 1) then
+                        if ((TLake_r%d_ns(iunit) > 1 .and. &
+                             TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) <= lk_ddz_top_min) .or. &
+                            TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) >  lk_ddz_top_max) remap_done = .false.
+                        do i = 1, TLake_r%d_ns(iunit)-1
+                            if (TLake_r%dd_z(iunit,i) <= lk_ddz_min .or. &
+                                TLake_r%dd_z(iunit,i) >= ddz_max) remap_done = .false.
+                        end do
+                    end if
+                    if (remap_done) exit
 
-                end if                        
-        !if(iunit == 186781) then
-        !    write(unit=1008,fmt="(i4, i4, 3(e14.6))") 5, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-    !if(iunit == 186781) then 
-    !    write(unit=78000,fmt="(i4, i4, 5(e18.10))") 5, ww, TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-1), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-2), t_in, THeat%forc_t(iunit)
-    !end if
-        !if(iunit == 186781) then
-        !    write(unit=18001,fmt="(i4, i4, i4, 7(e14.6))") 7, ww, TLake_r%d_ns(iunit),  sum(TLake_r%d_v(iunit,:)), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)- TLake_r%v_zt(iunit,1), TLake_r%V_str(iunit) - TLake_r%v_zt(iunit,1), TLake_r%lake_inflow(iunit)*dtime, TLake_r%lake_outflow(iunit)*dtime, (v_prcp-v_evap), (TLake_r%lake_inflow(iunit) + TLake_r%lake_outflow(iunit))*dtime + (v_prcp-v_evap)
-        !    write(unit=18004,fmt="(i4, i4, i4, 9(e14.6))") 7, ww, TLake_r%d_ns(iunit),  sum(TLake_r%v_zn(iunit,:)) + sum(dv_in) - sum(dv_ou) + v_prcp - v_evap, sum(TLake_r%d_v(iunit,:)) + sum(dv_in) - sum(dv_ou) + v_prcp - v_evap, sum(dv_in), sum(dv_ou), v_prcp - v_evap, TLake_r%d_v(iunit,TLake_r%d_ns(iunit)), dv_ou(TLake_r%d_ns(iunit)), TLake_r%d_v(iunit,TLake_r%d_ns(iunit)) - dv_ou(TLake_r%d_ns(iunit)),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit))
-        !    write(unit=18002,fmt="(i4, i4, i4, 6(e18.10))")  0, ww, TLake_r%d_ns(iunit), sum(TLake_r%d_v(iunit,:)), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1), TLake_r%V_str(iunit), sum(TLake_r%d_v(iunit,:))-TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1), sum(TLake_r%d_v(iunit,:))-TLake_r%V_str(iunit), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)-TLake_r%V_str(iunit) 
-        !    write(unit=18002,fmt="(i4, i4, i4, 6(e18.10))")  0, ww, 0, sum(TLake_r%d_v(iunit,:)), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1), TLake_r%V_str(iunit), sum(TLake_r%d_v(iunit,:))-TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)+TLake_r%v_zt(iunit,1), sum(TLake_r%d_v(iunit,:))-TLake_r%V_str(iunit)+TLake_r%v_zt(iunit,1), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)-TLake_r%V_str(iunit) 
-        !    write(unit=18003,fmt="(i4, i4, i4, 2(e14.6))")  0, ww, TLake_r%d_ns(iunit), sum(TLake_r%dv_nt(iunit,:)), q_in*dtime-q_ou*dtime - v_evap
-        !    write(unit=18005,fmt="(i4, i4, i4, 3(e14.6))") 7, ww, TLake_r%d_ns(iunit),  TLake_r%d_v(iunit,TLake_r%d_ns(iunit)), TLake_r%lake_outflow(iunit)*dtime,  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit))
-        !    write(unit=18005,fmt="(i4, i4, i4, 8(e14.6))")  7, ww, TLake_r%d_ns(iunit), TLake_r%d_v(iunit,1), TLake_r%dv_nt(iunit,1), TLake_r%d_v(iunit,2), TLake_r%dv_nt(iunit,2), TLake_r%d_v(iunit,3), TLake_r%dv_nt(iunit,3)
-        !    write(unit=18006,fmt="(i4, i4,  3(e14.6))")  7, ww, TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1), TLake_r%v_zti(iunit,ngeom+1), TLake_r%v_zn(iunit,TLake_r%d_ns(iunit))
-        !end if
+                    !    Layers that are too thin -> merge
+                    if (TLake_r%d_ns(iunit) == 2) then
+                        if (TLake_r%dd_z(iunit,2) <= lk_ddz_top_min .or. TLake_r%dd_z(iunit,1) <= lk_ddz_min) then
+                            call toplayer_merge_r(iunit)
+                        end if
+                    elseif (TLake_r%d_ns(iunit) > 2) then
+                        if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) <= lk_ddz_top_min) then
+                            call toplayer_merge_r(iunit)
+                        end if
+                        do i = 1, TLake_r%d_ns(iunit)-1
+                            if (TLake_r%dd_z(iunit,i) <= lk_ddz_min) then
+                                call layer_merge_r(iunit,i)
+                                exit
+                            end if
+                        end do
+                    end if
 
-                !    Check if any layers are too thick
-                if (TLake_r%d_ns(iunit) > 1) then
-                    if(TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) > ddz_top_max) then
-                       call layer_split_r(iunit,TLake_r%d_ns(iunit))
-                    end if 
-                    do i=1,TLake_r%d_ns(iunit)-1
-                        if(TLake_r%dd_z(iunit,i) >= ddz_max) then 
-                            call layer_split_r(iunit,i)
-                            exit
-                        end if                                
-                    end do
-                    ! repeat one more time in case any layer is still too thick after splitting once (and layer number changed)
-                    do i=1,TLake_r%d_ns(iunit)-1
-                        if(TLake_r%dd_z(iunit,i) >= ddz_max) then 
-                            call layer_split_r(iunit,i)
-                            exit
-                        end if                                
-                    end do                    
-        !if(iunit == 186781) then
-        !    write(unit=1009,fmt="(i4, i4, 3(e14.6))") 24, TLake_r%d_ns(iunit),  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)), TLake_r%dd_z(iunit,1), TLake_r%dd_z(iunit,2)
-        !end if
-                end if
+                    !    Layers that are too thick -> split
+                    !    ">= 1" so that a single layer thicker than lk_ddz_top_max
+                    !    splits back into two.  layer_split_r(iunit,1) is safe at
+                    !    d_ns==1: it writes d_z/a_d/v_zt at index 3 (dimensioned
+                    !    nlayers+1), the renumbering loop "do j=2,1" is empty, and
+                    !    both halves inherit the parent layer temperature, so volume
+                    !    and energy are conserved exactly.
+                    if (TLake_r%d_ns(iunit) >= 1) then
+                        if (TLake_r%dd_z(iunit,TLake_r%d_ns(iunit)) > lk_ddz_top_max) then
+                            ! No free slot left: buy one by coarsening the bottom of
+                            ! the column.  The top-layer band drives the surface
+                            ! energy budget and has to be held; deep-lake interior
+                            ! resolution is the slack variable.  Only coarsen while
+                            ! the merged bottom layer stays under ddz_max (3x the
+                            ! lake's own initial interior thickness), so the bottom
+                            ! cannot run away and the interior splitter cannot undo
+                            ! it on the next pass.
+                            if (TLake_r%d_ns(iunit) >= nlayers-1 .and. TLake_r%d_ns(iunit) > 2) then
+                                if (TLake_r%dd_z(iunit,1) + TLake_r%dd_z(iunit,2) < ddz_max) then
+                                    call layer_merge_r(iunit,1)
+                                    if (nlog_coarsen < lk_nlog_max) then
+                                        nlog_coarsen = nlog_coarsen + 1
+                                        write(iulog,*) 'mosart-lake r: bottom coarsened to free a layer slot, iunit=', &
+                                                       iunit, ' d_ns=', TLake_r%d_ns(iunit)
+                                    end if
+                                end if
+                            end if
+                            call layer_split_r(iunit,TLake_r%d_ns(iunit))
+                        end if
+                        if (TLake_r%d_ns(iunit) < nlayers-1) then
+                            do i = 1, TLake_r%d_ns(iunit)-1
+                                if (TLake_r%dd_z(iunit,i) >= ddz_max) then
+                                    call layer_split_r(iunit,i)
+                                    exit
+                                end if
+                            end do
+                        end if
+                    end if
+
+                    n_remap = n_remap + 1
+                end do
+                ! ------------------------------------------------------------------
 
     !if(iunit == 186781) then 
     !    write(unit=78000,fmt="(i4, i4, 5(e18.10))") 6, ww, TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-1), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-2), t_in, THeat%forc_t(iunit)
@@ -487,10 +554,32 @@ MODULE mosart_lake_r_mod
         !    write(unit=18006,fmt="(i4, i4,  3(e14.6))")  8, ww, TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1), TLake_r%v_zti(iunit,ngeom+1), TLake_r%v_zn(iunit,TLake_r%d_ns(iunit))
         !end if
 
+                ! ---- dry-lake terminal state ------------------------------------------
+                ! Evaporation is capped at 95% of the top layer and outflow at 50% of the
+                ! draining layers, both per sub-timestep, so storage decays geometrically
+                ! and never reaches zero.  The lake is then carried down past the round-off
+                ! floor of its own flux history (~1e-16 * V_initial * sqrt(nsteps)), where
+                ! V_str and v_zt no longer even agree in sign.  Retire the lake while its
+                ! storage is still many orders of magnitude above that floor: take the
+                ! remainder as evaporation and snap every representation to exactly dry.
+                V_now = TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1) - TLake_r%v_zt(iunit,1)
+                V_dry = max(1.e-3_r8 * TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1), &
+                            1.e-9_r8 * TLake_r%v_zti(iunit,ngeom+1))
+                if (V_now < V_dry) then
+                    v_evap = v_evap + max(V_now, 0._r8)   ! remainder leaves as evaporation
+                    call lake_r_set_dry(iunit)
+                end if
+                ! -----------------------------------------------------------------------
+
                 tmp_outflow = tmp_outflow + TLake_r%lake_outflow(iunit) + TLake_r%lake_spillflow(iunit)
                 tmp_evap = tmp_evap + v_evap/dtime ! unit m3/s here, note the volume of evap. is calculated only over effective lake areas
                 TLake_r%dV_str(iunit) = TLake_r%lake_inflow(iunit) + TLake_r%lake_outflow(iunit) + TLake_r%lake_spillflow(iunit) + (v_prcp-v_evap)/dtime
                 TLake_r%V_str(iunit) = TLake_r%V_str(iunit) + TLake_r%dV_str(iunit) * dtime ! dV_str = inflow - outflow
+                ! Hard-snap the storage accumulator once the lake is dry.  This is the point
+                ! of the whole mechanism: it breaks the accumulation chain, so the drift that
+                ! V_str picked up over the lake's lifetime is discarded instead of being
+                ! carried down into a regime where its sign is pure noise.
+                if (TLake_r%is_dry(iunit)) TLake_r%V_str(iunit) = TLake_r%v_zt(iunit,1)
         !if(iunit == 186781) then 
         !    write(unit=18001,fmt="(i4, i4, i4, 7(e14.6))") 9, ww, TLake_r%d_ns(iunit),  sum(TLake_r%d_v(iunit,:)), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)- TLake_r%v_zt(iunit,1), TLake_r%V_str(iunit) - TLake_r%v_zt(iunit,1), TLake_r%lake_inflow(iunit)*dtime, TLake_r%lake_outflow(iunit)*dtime, (v_prcp-v_evap), (TLake_r%lake_inflow(iunit) + TLake_r%lake_outflow(iunit))*dtime + (v_prcp-v_evap)
         !    write(unit=18005,fmt="(i4, i4, i4, 3(e14.6))") 9, ww, TLake_r%d_ns(iunit),  TLake_r%d_v(iunit,TLake_r%d_ns(iunit)), TLake_r%lake_outflow(iunit)*dtime,  TLake_r%dd_z(iunit,TLake_r%d_ns(iunit))
@@ -498,11 +587,17 @@ MODULE mosart_lake_r_mod
         !    write(unit=18002,fmt="(i4, i4, i4, 6(e18.10))")  0, ww, 0, sum(TLake_r%d_v(iunit,:)), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1), TLake_r%V_str(iunit), sum(TLake_r%d_v(iunit,:))-TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)+TLake_r%v_zt(iunit,1), sum(TLake_r%d_v(iunit,:))-TLake_r%V_str(iunit)+TLake_r%v_zt(iunit,1), TLake_r%v_zt(iunit, TLake_r%d_ns(iunit) + 1)-TLake_r%V_str(iunit) 
         !    write(unit=18003,fmt="(i4, i4, i4, 2(e14.6))")  0, ww, TLake_r%d_ns(iunit), sum(TLake_r%dv_nt(iunit,:)), q_in*dtime-q_ou*dtime - v_evap
         !end if
-                !!! Please DO NOT delete. necessary for diagnosis & debugging 
+                !!! Please DO NOT delete. necessary for diagnosis & debugging
                 !Call lake_r_waterbalance_check(iunit)
 
+                ! The lake dried out during this sub-timestep: it now holds no water, so
+                ! there is no energy to redistribute and dd_z/d_v are exactly zero, which
+                ! the stratification and tridiagonal solvers cannot be run on.  temp_lake
+                ! is left at its last wet value so lake_Tsur stays finite and the lake has
+                ! a sensible temperature to resume from.
+                if (TLake_r%is_dry(iunit)) cycle
 
-                !!======================== energy balance processes   
+                !!======================== energy balance processes
                 ! initialize for current sub time step
                 phi_o          = 0._r8 !
                 sh_net         = 0._r8            
@@ -550,8 +645,15 @@ MODULE mosart_lake_r_mod
                 end do
 
 
-                ! Lake is too empty/shallow, no need to invoke the energy balance method
-                if(TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1) <= TINYVALUE) then    
+                ! Lake is too empty/shallow, no need to invoke the energy balance method.
+                ! TINYVALUE (1e-14) is meaningless as a volume in m3: a lake that drains at
+                ! runtime can fall to a sub-millimetre mean depth and still pass it, and then
+                ! Fx = dt*phi*A/(d_v*c_w*rho) overflows because the surface area A stays finite
+                ! while d_v -> 0. Require a minimum mean depth (V/A) instead. The whole
+                ! 49,708-object population starts above 0.02 m, so this only fires on drainage.
+                if(TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1) <= TINYVALUE .or. &
+                   TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1) < &
+                   ddz_lake_min*TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)) then
                     do j = 1, nlayers    
                         if (j<=TLake_r%d_ns(iunit)) then
                             TLake_r%temp_lake(iunit,j) = THeat%Tr(iunit)
@@ -607,13 +709,46 @@ MODULE mosart_lake_r_mod
 
                 ! latent heat needs to be consistent with evaporation    
                 if (t_s > t_frz) then
-                    lt_heat = rho_w * evap* le    !latent heat (w/m^2)
+                    lt_heat_open = rho_w * evap_open * le   ! per unit open water (w/m^2)
+                    lt_heat      = rho_w * evap * le        ! per unit total lake area, for diagnostics
                 else 
-                    lt_heat = 0.0_r8
+                    lt_heat_open = 0.0_r8
+                    lt_heat      = 0.0_r8
                 end if
 
-                !     Net surface heat flux  
-                phi_o = sh_net + lw_abr - (lt_heat + lw_ems + sn_heat)!
+                !     Net surface heat flux. The six terms above are per unit OPEN WATER area;
+                !     with a prescribed ice/snow cover they are weighted by the open fraction and
+                !     the ice-covered fractions contribute a conductive flux instead.
+                q_open_non_sw        = lw_abr - (lt_heat_open + lw_ems + sn_heat)
+                sh_net_to_water      = sh_net
+                non_sw_flux_to_water = q_open_non_sw
+                wind_mix_factor      = 1._r8
+                t_ice_surf           = t_s
+                if (lake_snowice_flag) then
+                    call lake_ice_snow_bc(TLake_r%lake_ice_fraction(iunit), TLake_r%lake_ice_depth(iunit), &
+                         TLake_r%lake_snow_fraction(iunit), TLake_r%lake_snow_depth(iunit), &
+                         THeat%forc_solar(iunit), alb_s, q_open_non_sw, t_s, THeat%forc_t(iunit), &
+                         THeat%forc_wind(iunit), fopen, sh_net_to_water, non_sw_flux_to_water, &
+                         wind_mix_factor, t_ice_surf)
+                end if
+                TLake_r%lake_t_ice_surf(iunit) = t_ice_surf
+                ! spurious-ice diagnostic: ice prescribed on water well above freezing.
+                ! Flags emulator false positives (tropical lakes) without altering the physics.
+                if (TLake_r%lake_ice_fraction(iunit) > 0.01_r8 .and. t_s > 277.15_r8) then
+                    TLake_r%lake_fice_spur(iunit) = TLake_r%lake_ice_fraction(iunit)
+                else
+                    TLake_r%lake_fice_spur(iunit) = 0._r8
+                end if
+                if (lake_snowice_flag) then
+                    sh_net = sh_net_to_water
+                    phi_o  = sh_net + non_sw_flux_to_water
+                else
+                    ! Same value as the branch above, but written with the original
+                    ! association so that switching the ice off stays bit-for-bit.
+                    ! (a+b)-c and a+(b-c) differ by an ulp, and the layer merge/split
+                    ! and freezing-point thresholds turn that into visible drift.
+                    phi_o = sh_net + lw_abr - (lt_heat + lw_ems + sn_heat)
+                end if
 
 !        if(iunit == 186781) then
 !            write(unit=61001,fmt="(i4, i4, i4, 9(e18.10))") 0, ww, dflag, phi_o, sh_net, lw_abr, lt_heat, lw_ems, sn_heat, TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)), THeat%forc_t(iunit), t_in
@@ -626,7 +761,17 @@ MODULE mosart_lake_r_mod
     !    write(unit=78000,fmt="(i4, i4, 5(e18.10))") 8, ww, TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-1), TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit)-2), t_in, THeat%forc_t(iunit)
     !end if
                 
-                if(TUnit_lake_r%one_layer(iunit) == 1 .or. TLake_r%d_lake(iunit) < 20._r8) then !if high-latitude or shallow lakes, empirical approach
+                ! 'legacy' reproduces the historical rule; note d_lake is updated every sub-timestep,
+                ! so a lake near 20 m can switch schemes back and forth within a run.
+                select case (trim(lake_temp_scheme))
+                case ('empirical')
+                    use_empirical = .true.
+                case ('legacy')
+                    use_empirical = (TUnit_lake_r%one_layer(iunit) == 1 .or. TLake_r%d_lake(iunit) < 20._r8)
+                case default
+                    use_empirical = .false.
+                end select
+                if(use_empirical) then
                     if(THeat%forc_vp(iunit) < TINYVALUE) then
                         do j = 1, nlayers    
                             if (j<=TLake_r%d_ns(iunit))  then   
@@ -714,15 +859,19 @@ MODULE mosart_lake_r_mod
                         phi_x(j) = 0._r8
                     end do
                     
-                    if (sh_net > TINYVALUE .and. TLake_r%d_ns(iunit) >2) then
+                    if (sh_net > TINYVALUE .and. TLake_r%d_ns(iunit) >=2) then
                         k=0
                         top_d=TLake_r%d_lake(iunit)-TLake_r%d_z(iunit,TLake_r%d_ns(iunit)-k)
                         if(top_d < 0.61_r8) then
                             k=k+1
                         else
                             k=k+2
-                        end if    
-                        v_mix=(TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1)-TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)-k))    
+                        end if
+                        ! the mixed zone cannot extend below the bottom layer; without this the
+                        ! d_ns==2 case indexes a_d(iunit,0). Before this clamp d_ns==2 fell through
+                        ! to the else branch and lost all absorbed shortwave (phi_z stayed 0).
+                        k=min(k,TLake_r%d_ns(iunit)-1)
+                        v_mix=(TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1)-TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)-k))
                         !    Solar radiation energy absorbed at the mixed zone
                         sh_mix=sh_net*sar*(TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)-(1._r8-beta)*TLake_r%a_d(iunit,TLake_r%d_ns(iunit)-k))
                         j=TLake_r%d_ns(iunit)-k
@@ -765,7 +914,7 @@ MODULE mosart_lake_r_mod
                     else
                         c_d = 5.e-4*sqrt(THeat%forc_wind(iunit))
                     end if
-                    tau = rho_a*c_d*THeat%forc_wind(iunit)**2._r8 ! Shear stress at surface
+                    tau = rho_a*c_d*THeat%forc_wind(iunit)**2._r8 * wind_mix_factor ! Shear stress at surface, open water only
                     s_vel = sqrt(tau/rho_w) ! Shear velocity at surface
                     k_ew=tau*s_vel*sar*TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)*dtime    ! Wind driven kinetic energy at surface
                     dis_w = k_ew/(rho_w*TLake_r%v_zt(iunit,TLake_r%d_ns(iunit)+1)*dtime)  ! rate of dissipation-wind
@@ -779,7 +928,10 @@ MODULE mosart_lake_r_mod
                         k_ad(j)=0.5_r8*rho_w*q_adv(j)*dtime*(q_adv(j)/(TUnit_lake_r%Width(iunit)*1000._r8*TLake_r%dd_z(iunit,j)))**2._r8 ! Advection driven kinetic energy 
                         dis_ad(j)= k_ad(j)/(rho_w*TLake_r%v_zt(iunit,j)*dtime)    ! rate of dissipation-inflow/outflow                    
                     ! Calculate Richardson number
-                        drhodz(j) = (rho_z(j-1)-rho_z(j))/0.5_r8*(TLake_r%dd_z(iunit,j)+TLake_r%dd_z(iunit,j-1))
+                        ! parenthesise the denominator: / and * bind left-to-right in Fortran, so the
+                        ! original a/0.5_r8*(b+c) evaluated as (a/0.5)*(b+c) -- units kg/m2 instead of
+                        ! the kg/m4 a density gradient needs, too large by (dd_z(j)+dd_z(j-1))**2.
+                        drhodz(j) = (rho_z(j-1)-rho_z(j))/(0.5_r8*(TLake_r%dd_z(iunit,j)+TLake_r%dd_z(iunit,j-1)))
                         bv_f = max((grav/rho_w)*drhodz(j),0._r8)
                         if (s_vel <= TINYVALUE .or. TLake_r%d_z(iunit,j) <= TINYVALUE) then
                             ri = 0._r8
@@ -1034,7 +1186,15 @@ MODULE mosart_lake_r_mod
             THeat%Ha_rout(iunit) = -cr_advectheat(abs(TRunoff%erout(iunit,nt_nliq)), TLake_r%lake_Tout(iunit))
             tmp_evap = tmp_evap/s_dtime
             TLake_r%lake_evap(iunit) = -tmp_evap
-            
+
+            ! freezing-point energy gap: J accumulated over localDeltaT --> W/m2
+            if (TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1) > TINYVALUE) then
+                TLake_r%lake_egap(iunit) = TLake_r%lake_egap(iunit) &
+                     / (localDeltaT * TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1))
+            else
+                TLake_r%lake_egap(iunit) = 0._r8
+            end if
+
             TLake_r%lake_Tsur(iunit) = TLake_r%temp_lake(iunit,TLake_r%d_ns(iunit))
             if(TLake_r%lake_Tsur(iunit) > 400._r8) then
                 !write(unit=10009,fmt="(i10, 5(e14.6))") iunit, TLake_r%d_lake(iunit), t_in, THeat%forc_t(iunit), TLake_r%lake_Tsur(iunit), TLake_r%temp_lake(iunit,1)
@@ -1499,8 +1659,59 @@ MODULE mosart_lake_r_mod
 !end if
 
     end subroutine over_flow_r
-     
-    subroutine lake_r_waterbalance_check(iunit) 
+
+    subroutine lake_r_set_dry(iunit)
+    ! !DESCRIPTION: retire a dried-out lake.  Snap every redundant representation of the
+    ! storage (V_str, v_zt, d_v, d_z, dd_z, d_lake, A_str) to the exact zero-storage state
+    ! so that all of the water-balance invariants hold by construction, and flag the lake
+    ! so the solver is skipped until inflow revives it.
+    !
+    ! a_d is deliberately LEFT ALONE: it is a divisor for d_evap and a multiplier for
+    ! v_prcp/v_evap in mosart_lake_r, and the surface area of the dry basin is still the
+    ! right area to use the moment water returns.  The is_dry short-circuit keeps it out
+    ! of those expressions in the meantime.
+        implicit none
+        integer, intent(in) :: iunit
+        integer :: j
+        real(r8) :: v_base   ! volume at the basin floor; lakegeom_init_r sets v_zti(:,1) = 0
+
+        v_base = TLake_r%v_zt(iunit,1)
+
+        TLake_r%d_ns(iunit)   = 1
+        TLake_r%d_lake(iunit) = 0._r8
+        TLake_r%A_str(iunit)  = 0._r8
+        TLake_r%V_str(iunit)  = v_base
+        TLake_r%dV_str(iunit) = 0._r8
+        TLake_r%J_Min(iunit)  = 1
+
+        do j = 1, nlayers+1
+            TLake_r%v_zt(iunit,j) = v_base
+            TLake_r%d_z(iunit,j)  = 0._r8
+        end do
+        do j = 1, nlayers
+            TLake_r%d_v(iunit,j)  = 0._r8
+            TLake_r%dd_z(iunit,j) = 0._r8
+            TLake_r%v_zn(iunit,j) = 0._r8
+            TLake_r%dv_nt(iunit,j) = 0._r8
+        end do
+
+        TLake_r%lake_outflow(iunit)   = 0._r8
+        TLake_r%lake_spillflow(iunit) = 0._r8
+
+        TLake_r%is_dry(iunit) = .true.
+        if (lk_dry_log_r < lk_dry_log_max) then
+            lk_dry_log_r = lk_dry_log_r + 1
+            write(iulog,*) 'mosart-lake r: lake dried out, iunit=', iunit, &
+                 ' A_sur=', TLake_r%a_d(iunit,2), ' V_cap=', TLake_r%v_zti(iunit,ngeom+1)
+            if (lk_dry_log_r == lk_dry_log_max) then
+                write(iulog,*) 'mosart-lake r: dry/refill reporting cap reached, ' // &
+                     'further transitions on this task are not logged'
+            end if
+        end if
+
+    end subroutine lake_r_set_dry
+
+    subroutine lake_r_waterbalance_check(iunit)
     ! !DESCRIPTION: check the lake water balance
         implicit none    
         integer, intent(in) :: iunit
@@ -1655,14 +1866,20 @@ MODULE mosart_lake_r_mod
         integer,intent(in) :: n,iunit
         real(r8),dimension(n),intent(in) :: a,b,c,r
         real(r8),dimension(n) :: bp,rp
-        real(r8) :: m,tt 
-        integer i        
-        
+        real(r8) :: m,tt
+        integer i
+        real(r8) :: t_raw                              ! layer temperature before the freezing-point clamp (K)
+        real(r8), parameter :: c_w   = 4.188e3_r8      ! water specific heat capacity (J/kg/K)
+        real(r8), parameter :: rho_w = 1.e3_r8         ! water density (kg/m3)
+
 !     initialize c-prime and d-prime
         bp(n)=b(n)
         rp(n)=r(n)
-        do i=n-1,1,-1 
-            tt=a(i)/b(i+1)
+        do i=n-1,1,-1
+            ! must divide by the already-eliminated bp(i+1), not the original b(i+1).
+            ! b(n)==bp(n) makes the first sweep agree either way, so the error only shows
+            ! from i=n-2 down: exact for n<=2, and growing with the diffusion number for n>=3.
+            tt=a(i)/bp(i+1)
             bp(i) = b(i)-c(i+1)*tt
             rp(i) = r(i)-rp(i+1)*tt
         end do
@@ -1674,17 +1891,26 @@ MODULE mosart_lake_r_mod
             TLake_r%temp_lake(iunit,1) = 273.15_r8
         end if
         if(TLake_r%temp_lake(iunit,1) < 273.15_r8) then ! to be modified after including ice/snow effect
+            t_raw = TLake_r%temp_lake(iunit,1)
+            TLake_r%lake_egap(iunit) = TLake_r%lake_egap(iunit) &
+                 + rho_w*c_w*TLake_r%d_v(iunit,1)*(273.15_r8 - t_raw)
             TLake_r%temp_lake(iunit,1) = 273.15_r8
         end if
 !     Back substitution
         do i = 2,n
             TLake_r%temp_lake(iunit,i) = (rp(i)-c(i)*TLake_r%temp_lake(iunit,i-1))/bp(i)
             if(TLake_r%temp_lake(iunit,i) < 273.15_r8) then ! to be modified after including ice/snow effect
+                t_raw = TLake_r%temp_lake(iunit,i)
+                TLake_r%lake_egap(iunit) = TLake_r%lake_egap(iunit) &
+                     + rho_w*c_w*TLake_r%d_v(iunit,i)*(273.15_r8 - t_raw)
                 TLake_r%temp_lake(iunit,i) = 273.15_r8
             end if
             ! freezing do not start from the bottom
             !TLake_r%temp_lake(iunit,i) = (rp(i)-c(i)*TLake_r%temp_lake(iunit,i+1))/bp(i)
             if(TLake_r%temp_lake(iunit,i) <= 273.15_r8 .and. TLake_r%temp_lake(iunit,i+1) > 273.15_r8) then
+                TLake_r%lake_egap(iunit) = TLake_r%lake_egap(iunit) &
+                     + rho_w*c_w*TLake_r%d_v(iunit,i) &
+                       *(TLake_r%temp_lake(iunit,i+1) - TLake_r%temp_lake(iunit,i))
                 TLake_r%temp_lake(iunit,i) = TLake_r%temp_lake(iunit,i+1)
             end if
         end do

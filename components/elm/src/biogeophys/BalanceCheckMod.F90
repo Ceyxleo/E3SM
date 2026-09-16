@@ -374,7 +374,9 @@ contains
        found = .false.
        do c = bounds%begc, bounds%endc
           
-          if (abs(errh2o(c)) > 1.e-7_r8) then
+          ! Zero-weight virtual columns do not contribute to gridcell budgets.
+          if (col_pp%active(c) .and. col_pp%wtgcell(c) /= 0._r8 .and. &
+              abs(errh2o(c)) > 1.e-7_r8) then
              found = .true.
              indexc = c             
           end if

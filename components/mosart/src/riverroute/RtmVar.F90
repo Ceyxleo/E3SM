@@ -36,6 +36,13 @@ module RtmVar
   logical, public :: use_ocn_rof_two_way = .false.     ! ocean river two way coupling flag
   logical, public :: rstraflag = .false.               ! reservoir stratification module flag
   logical, public :: lakeflag  = .false.               ! reservoir stratification module flag
+  ! How lake temperature is solved when lakeflag is on:
+  !   'energy'    - every lake uses the layered energy-balance solver (default)
+  !   'empirical' - every lake uses the Zhao & Gao (2019) equilibrium-temperature scheme
+  !   'legacy'    - reproduce the historical rule: empirical when abs(lat)>=40 or d_lake<20 m
+  character(len=16), public :: lake_temp_scheme = 'energy'  ! lake temperature solver selection
+  logical, public :: lake_snowice_flag = .false.       ! prescribed lake snow/ice from the emulator driver
+  character(len=256), public :: lake_snowice_driver_file = ' '  ! path to the monthly snow/ice driver
   real,    public :: rinittemp = 283.15_r8             ! initial reservoir temperature
   integer, public :: ngeom   = 50                      ! Reservoir depth layers to calculate depth-area-storage relationship
   integer, public :: nlayers = 30                      ! Maximum number of reservoir layers for stratification

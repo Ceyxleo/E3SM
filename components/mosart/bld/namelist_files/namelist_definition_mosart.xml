@@ -142,12 +142,46 @@ Default: .false.
 If .true., reservoir stratification module will be turned on.
 </entry>
 
-<entry id="lakeflag" 
-       type="logical" 
+<entry id="lakeflag"
+       type="logical"
        category="mosart"
        group="mosart_inparm">
 Default: .false.
 If .true., reservoir stratification module will be turned on.
+</entry>
+
+<entry id="lake_snowice_flag"
+       type="logical"
+       category="mosart"
+       group="mosart_inparm">
+Default: .false.
+If .true., read prescribed lake snow/ice (ice fraction, ice thickness, snow cover fraction,
+snow depth) from lake_snowice_driver_file and let it modulate the lake surface energy budget
+and evaporation. One-way: MOSART never feeds lake state back to the emulator. No ice mass
+balance is carried, so meltwater does not enter the lake.
+</entry>
+
+<entry id="lake_snowice_driver_file"
+       type="char*256"
+       category="mosart"
+       group="mosart_inparm">
+Default: ' '
+Path to the monthly prescribed snow/ice driver, laid out as (time, allrof) with a yyyymm
+time axis. Required when lake_snowice_flag is .true.
+</entry>
+
+<entry id="lake_temp_scheme"
+       type="char*16"
+       category="mosart"
+       group="mosart_inparm"
+       valid_values="energy,empirical,legacy" >
+Default: 'energy'
+Selects how lake temperature is solved when lakeflag is .true.
+'energy'    - every lake uses the layered energy-balance solver.
+'empirical' - every lake uses the Zhao and Gao (2019) equilibrium-temperature scheme.
+'legacy'    - historical behaviour: the empirical scheme is used where abs(latitude)>=40
+              or the lake depth is below 20 m, and high-latitude lakes are additionally
+              collapsed to a single layer.
 </entry>
 
 <entry id="rinittemp" 

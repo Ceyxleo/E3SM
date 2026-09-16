@@ -15,7 +15,8 @@ MODULE MOSART_physics_mod
   use shr_kind_mod  , only : r8 => shr_kind_r8, SHR_KIND_CL
   use shr_const_mod , only : SHR_CONST_REARTH, SHR_CONST_PI
   use shr_sys_mod   , only : shr_sys_abort
-  use RtmVar        , only : iulog, barrier_timers, wrmflag, inundflag, sediflag, heatflag, rstraflag, use_ocn_rof_two_way, lakeflag
+  use RtmVar        , only : iulog, barrier_timers, wrmflag, inundflag, sediflag, heatflag, rstraflag, use_ocn_rof_two_way, lakeflag, lake_snowice_flag
+  use mosart_lake_snowice_mod, only : lake_snowice_update
   use RunoffMod     , only : Tctl, TUnit, TRunoff, Theat, TUnit_lake_r, TLake_r, TUnit_lake_t, TLake_t, TPara, rtmCTL, &
                              SMatP_upstrm, avsrc_upstrm, avdst_upstrm, SMatP_dnstrm, avsrc_dnstrm, avdst_dnstrm
   use MOSART_heat_mod
@@ -181,10 +182,14 @@ MODULE MOSART_physics_mod
        TLake_r%lake_prcp_avg = 0._r8
        TLake_r%lake_Asur_avg = 0._r8
        TLake_r%lake_Tsur_avg = 0._r8
+       TLake_r%lake_egap_avg = 0._r8
        TLake_t%lake_evap_avg = 0._r8
        TLake_t%lake_prcp_avg = 0._r8
        TLake_t%lake_Asur_avg = 0._r8
        TLake_t%lake_Tsur_avg = 0._r8
+       TLake_t%lake_egap_avg = 0._r8
+       ! refresh the prescribed snow/ice state for the current model date
+       if (lake_snowice_flag) call lake_snowice_update()
     end if
 
     negchan = 9999.0_r8
@@ -273,7 +278,15 @@ MODULE MOSART_physics_mod
                  TLake_t%lake_evap_avg(iunit) = TLake_t%lake_evap_avg(iunit) + TLake_t%lake_evap(iunit)
                  TLake_t%lake_prcp_avg(iunit) = TLake_t%lake_prcp_avg(iunit) + TLake_t%lake_rain(iunit) + TLake_t%lake_snow(iunit)
                  TLake_t%lake_Tsur_avg(iunit) = TLake_t%lake_Tsur_avg(iunit) + TLake_t%lake_Tsur(iunit)
-                 TLake_t%lake_Asur_avg(iunit) = TLake_t%lake_Asur_avg(iunit) + TLake_t%a_d(iunit,TLake_t%d_ns(iunit)+1)             
+                 ! a_d is kept at the dry basin's area (it is a divisor in mosart_lake_t and
+                 ! is needed again on refill), but a lake holding no water has no water
+                 ! surface, so report zero to match A_str.
+                 if (TLake_t%is_dry(iunit)) then
+                     TLake_t%lake_Asur_avg(iunit) = TLake_t%lake_Asur_avg(iunit) + 0._r8
+                 else
+                     TLake_t%lake_Asur_avg(iunit) = TLake_t%lake_Asur_avg(iunit) + TLake_t%a_d(iunit,TLake_t%d_ns(iunit)+1)
+                 end if
+                 TLake_t%lake_egap_avg(iunit) = TLake_t%lake_egap_avg(iunit) + TLake_t%lake_egap(iunit)
              endif 
              end if
              
@@ -576,7 +589,15 @@ MODULE MOSART_physics_mod
                  TLake_r%lake_evap_avg(iunit) = TLake_r%lake_evap_avg(iunit) + TLake_r%lake_evap(iunit)
                  TLake_r%lake_prcp_avg(iunit) = TLake_r%lake_prcp_avg(iunit) + TLake_r%lake_rain(iunit) + TLake_r%lake_snow(iunit)
                  TLake_r%lake_Tsur_avg(iunit) = TLake_r%lake_Tsur_avg(iunit) + TLake_r%lake_Tsur(iunit)
-                 TLake_r%lake_Asur_avg(iunit) = TLake_r%lake_Asur_avg(iunit) + TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1) 
+                 ! a_d is kept at the dry basin's area (it is a divisor in mosart_lake_r and
+                 ! is needed again on refill), but a lake holding no water has no water
+                 ! surface, so report zero to match A_str.
+                 if (TLake_r%is_dry(iunit)) then
+                     TLake_r%lake_Asur_avg(iunit) = TLake_r%lake_Asur_avg(iunit) + 0._r8
+                 else
+                     TLake_r%lake_Asur_avg(iunit) = TLake_r%lake_Asur_avg(iunit) + TLake_r%a_d(iunit,TLake_r%d_ns(iunit)+1)
+                 end if
+                 TLake_r%lake_egap_avg(iunit) = TLake_r%lake_egap_avg(iunit) + TLake_r%lake_egap(iunit)
              !end if
              end if 
              end if
@@ -762,10 +783,12 @@ MODULE MOSART_physics_mod
        TLake_r%lake_prcp_avg = TLake_r%lake_prcp_avg / Tctl%DLevelH2R
        TLake_r%lake_Tsur_avg = TLake_r%lake_Tsur_avg / Tctl%DLevelH2R
        TLake_r%lake_Asur_avg = TLake_r%lake_Asur_avg / Tctl%DLevelH2R
+       TLake_r%lake_egap_avg = TLake_r%lake_egap_avg / Tctl%DLevelH2R
        TLake_t%lake_evap_avg = TLake_t%lake_evap_avg / Tctl%DLevelH2R
        TLake_t%lake_prcp_avg = TLake_t%lake_prcp_avg / Tctl%DLevelH2R
        TLake_t%lake_Tsur_avg = TLake_t%lake_Tsur_avg / Tctl%DLevelH2R
        TLake_t%lake_Asur_avg = TLake_t%lake_Asur_avg / Tctl%DLevelH2R
+       TLake_t%lake_egap_avg = TLake_t%lake_egap_avg / Tctl%DLevelH2R
     end if
 
     !------------------

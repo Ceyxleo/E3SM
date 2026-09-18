@@ -170,6 +170,54 @@ Path to the monthly prescribed snow/ice driver, laid out as (time, allrof) with 
 time axis. Required when lake_snowice_flag is .true.
 </entry>
 
+<entry id="lake_snowice_source"
+       type="char*16"
+       category="mosart"
+       group="mosart_inparm"
+       valid_values="driver,emulator" >
+Default: 'driver'
+Where the prescribed lake snow/ice fields come from when lake_snowice_flag is .true.
+'driver'   - read the precomputed monthly fields from lake_snowice_driver_file.
+'emulator' - run the frozen snow/ice LSTM inside MOSART, reading its weights from
+             lake_snowice_model_file and its monthly meteorology from
+             lake_snowice_forcing_file. Still one-way: MOSART does not feed lake
+             state back to the emulator.
+</entry>
+
+<entry id="lake_snowice_model_file"
+       type="char*256"
+       category="mosart"
+       group="mosart_inparm">
+Default: ' '
+Path to the frozen snow/ice emulator package (LSTM weights, normalisation constants,
+per-object static inputs, object mapping and golden vectors). Required when
+lake_snowice_source is 'emulator'.
+</entry>
+
+<entry id="lake_snowice_forcing_file"
+       type="char*256"
+       category="mosart"
+       group="mosart_inparm">
+Default: ' '
+Path to the external monthly meteorological forcing for the emulator, laid out as
+(time, object, feature) with a contiguous yyyymm axis and the ten features
+hurs,huss,sfcwind,tasmax,tasmin,rlds,rsds,prsn,ps,pr. Its object axis must match the
+model package item for item. Required when lake_snowice_source is 'emulator'.
+</entry>
+
+<entry id="lake_snowice_spinup_months"
+       type="integer"
+       category="mosart"
+       group="mosart_inparm">
+Default: 24
+Months of forcing replayed from a zero LSTM state before the first month the model
+needs. The emulator state is deliberately not carried in the restart file; it is
+rebuilt by this replay instead. The packaged cold-start diagnostic gives a mean
+absolute f_ice difference against an exact replay of 0.043 at 0 months, 0.0022 at 12
+and 0.0013 at 24, so 24 is the default. Larger values cost a little more time at
+initialisation and nothing during the run.
+</entry>
+
 <entry id="lake_temp_scheme"
        type="char*16"
        category="mosart"

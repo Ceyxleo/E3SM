@@ -43,6 +43,10 @@ module RtmVar
   character(len=16), public :: lake_temp_scheme = 'energy'  ! lake temperature solver selection
   logical, public :: lake_snowice_flag = .false.       ! prescribed lake snow/ice from the emulator driver
   character(len=256), public :: lake_snowice_driver_file = ' '  ! path to the monthly snow/ice driver
+  character(len=16), public :: lake_snowice_source = 'driver'   ! 'driver' (precomputed) or 'emulator' (online LSTM)
+  character(len=256), public :: lake_snowice_model_file = ' '   ! frozen LSTM package, emulator source only
+  character(len=256), public :: lake_snowice_forcing_file = ' ' ! external monthly forcing, emulator source only
+  integer, public :: lake_snowice_spinup_months = 24            ! months of LSTM replay before the first needed month
   real,    public :: rinittemp = 283.15_r8             ! initial reservoir temperature
   integer, public :: ngeom   = 50                      ! Reservoir depth layers to calculate depth-area-storage relationship
   integer, public :: nlayers = 30                      ! Maximum number of reservoir layers for stratification

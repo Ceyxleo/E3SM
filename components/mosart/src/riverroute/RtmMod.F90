@@ -21,6 +21,7 @@ module RtmMod
   use RtmVar          , only : re, spval, rtmlon, rtmlat, iulog, ice_runoff, &
                                frivinp_rtm, frivinp_mesh, finidat_rtm, nrevsn_rtm,rstraflag,lakeflag,lake_temp_scheme,ngeom,nlayers,rinittemp, &
                                lake_snowice_flag, lake_snowice_driver_file, &
+                               lake_snowice_source, lake_snowice_model_file, lake_snowice_forcing_file, lake_snowice_spinup_months, &
                                nsrContinue, nsrBranch, nsrStartup, nsrest, &
                                inst_index, inst_suffix, inst_name, wrmflag, inundflag, &
                                smat_option, decomp_option, barrier_timers, heatflag, sediflag, do_budget, &
@@ -288,6 +289,7 @@ contains
          rtmhist_fexcl1,  rtmhist_fexcl2, rtmhist_fexcl3, &
          rtmhist_avgflag_pertape, decomp_option, wrmflag,rstraflag,lakeflag,lake_temp_scheme,ngeom,nlayers,rinittemp, &
          lake_snowice_flag, lake_snowice_driver_file, &
+         lake_snowice_source, lake_snowice_model_file, lake_snowice_forcing_file, lake_snowice_spinup_months, &
          inundflag, smat_option, delt_mosart, barrier_timers, do_budget, &
          RoutingMethod, DLevelH2R, DLevelR, sediflag, heatflag, data_bgc_fluxes_to_ocean_flag,redirect_negative_qgwl
 
@@ -307,6 +309,10 @@ contains
     lake_temp_scheme = 'energy'
     lake_snowice_flag = .false.
     lake_snowice_driver_file = ' '
+    lake_snowice_source = 'driver'
+    lake_snowice_model_file = ' '
+    lake_snowice_forcing_file = ' '
+    lake_snowice_spinup_months = 24
     rinittemp   = 283.15_r8
     ngeom       = 50  
     nlayers     = 30                  
@@ -396,7 +402,28 @@ contains
                call shr_sys_abort('mosart: invalid lake_temp_scheme')
            end if
            write(iulog,*) 'MOSART lake temperature scheme: ',trim(lake_temp_scheme)
-           if (lake_snowice_flag .and. len_trim(lake_snowice_driver_file) == 0) then
+           if (lake_snowice_flag) then
+               if (trim(lake_snowice_source) /= 'driver' .and. &
+                   trim(lake_snowice_source) /= 'emulator') then
+                   write(iulog,*) 'unknown lake_snowice_source = ',trim(lake_snowice_source), &
+                                  ' (expected driver or emulator)'
+                   call shr_sys_abort('mosart: invalid lake_snowice_source')
+               end if
+               if (trim(lake_snowice_source) == 'emulator') then
+                   if (len_trim(lake_snowice_model_file) == 0) &
+                       call shr_sys_abort('mosart: lake_snowice_source=emulator needs lake_snowice_model_file')
+                   if (len_trim(lake_snowice_forcing_file) == 0) &
+                       call shr_sys_abort('mosart: lake_snowice_source=emulator needs lake_snowice_forcing_file')
+                   if (lake_snowice_spinup_months < 0) &
+                       call shr_sys_abort('mosart: lake_snowice_spinup_months must be >= 0')
+                   write(iulog,*) 'MOSART lake snow/ice source: online emulator'
+                   write(iulog,*) '   model   = ',trim(lake_snowice_model_file)
+                   write(iulog,*) '   forcing = ',trim(lake_snowice_forcing_file)
+                   write(iulog,*) '   spin-up = ',lake_snowice_spinup_months,' months'
+               end if
+           end if
+           if (lake_snowice_flag .and. trim(lake_snowice_source) == 'driver' .and. &
+               len_trim(lake_snowice_driver_file) == 0) then
                call shr_sys_abort('mosart: lake_snowice_flag is on but lake_snowice_driver_file is empty')
            end if
            write(iulog,*) 'MOSART prescribed lake snow/ice: ',lake_snowice_flag
@@ -431,6 +458,10 @@ contains
     call mpi_bcast (lake_temp_scheme, len(lake_temp_scheme), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (lake_snowice_flag, 1, MPI_LOGICAL, 0, mpicom_rof, ier)
     call mpi_bcast (lake_snowice_driver_file, len(lake_snowice_driver_file), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_source, len(lake_snowice_source), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_model_file, len(lake_snowice_model_file), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_forcing_file, len(lake_snowice_forcing_file), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (lake_snowice_spinup_months, 1, MPI_INTEGER, 0, mpicom_rof, ier)
     call mpi_bcast (rinittemp,      1, MPI_REAL8, 0, mpicom_rof, ier)
     call mpi_bcast (ngeom,          1, MPI_INTEGER, 0, mpicom_rof, ier)
     call mpi_bcast (nlayers,        1, MPI_INTEGER, 0, mpicom_rof, ier)

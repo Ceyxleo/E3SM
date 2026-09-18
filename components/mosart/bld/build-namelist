@@ -320,6 +320,8 @@ else {
     add_default($nl, 'lakeflag');
     add_default($nl, 'lake_temp_scheme');
     add_default($nl, 'lake_snowice_flag');
+    add_default($nl, 'lake_snowice_source');
+    add_default($nl, 'lake_snowice_spinup_months');
     add_default($nl, 'rinittemp');
     add_default($nl, 'ngeom');						 
     add_default($nl, 'nlayers');						 

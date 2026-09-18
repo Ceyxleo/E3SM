@@ -29,6 +29,8 @@ for the CLM data in the CESM distribution
 <lakeflag>.false.</lakeflag>
 <lake_temp_scheme>energy</lake_temp_scheme>
 <lake_snowice_flag>.false.</lake_snowice_flag>
+<lake_snowice_source>driver</lake_snowice_source>
+<lake_snowice_spinup_months>24</lake_snowice_spinup_months>
 <rinittemp>283.15</rinittemp>
 <ngeom>50</ngeom>
 <nlayers>30</nlayers>

@@ -21,7 +21,11 @@ MODULE mosart_lake_snowice_mod
   use RtmFileUtils  , only : getfil
   use RtmIO         , only : ncd_pio_openfile, ncd_io, file_desc_t
   use RtmSpmd       , only : masterproc
-  use RtmVar        , only : iulog, lake_snowice_driver_file
+  use RtmVar        , only : iulog, lake_snowice_driver_file, lake_snowice_source
+  use mosart_lake_snowice_emulator_mod, only : lake_snowice_emulator_init,    &
+                                              lake_snowice_emulator_bracket, &
+                                              lake_snowice_emulator_range,   &
+                                              p_r0, p_r1, p_t0, p_t1
   use RunoffMod     , only : rtmCTL, TLake_r, TLake_t
   use RtmTimeManager, only : get_curr_date, get_calendar
   use pio           , only : pio_inq_dimid, pio_inq_dimlen, PIO_NOERR
@@ -76,6 +80,13 @@ contains
 
     if (initialized) return
 
+    ! The online emulator owns its own files; the prescribed driver is not opened at all.
+    if (trim(lake_snowice_source) == 'emulator') then
+       call lake_snowice_emulator_init()
+       initialized = .true.
+       return
+    end if
+
     if (len_trim(lake_snowice_driver_file) == 0) then
        call shr_sys_abort(subname//' lake_snowice_driver_file is empty')
     end if
@@ -112,15 +123,21 @@ contains
 !-------------------------------------------------------------------------------------------
   subroutine lake_snowice_update()
     ! Refresh the interpolated snow/ice state for the current model date.
-    ! Records are re-read only when the bracketing pair changes.
+    ! Both sources deliver monthly values on the same mid-month anchors, so the time
+    ! interpolation below is shared and a 'driver' run and an 'emulator' run differ only
+    ! in where the four numbers came from.
 
     integer  :: yr, mon, day, tod
     integer  :: ym0, ym1, yr0, mo0, yr1, mo1, i0, i1, n
+    integer  :: ym_first, ym_last
     real(r8) :: pos, half, span, w
     real(r8) :: dt_span
+    logical  :: emul
     character(len=*), parameter :: subname = '(lake_snowice_update)'
 
     if (.not. initialized) call lake_snowice_init()
+
+    emul = (trim(lake_snowice_source) == 'emulator')
 
     call get_curr_date(yr, mon, day, tod)
 
@@ -144,30 +161,41 @@ contains
     ym0 = yr0*100 + mo0
     ym1 = yr1*100 + mo1
 
-    ! Clamp to the driver end points: outside the covered range the nearest month is held.
-    ! Half a month of zero-order hold at each end is acceptable; a case that runs wholly
-    ! outside the driver is not, and is caught here.
-    if (ym1 < driver_yyyymm(1) .or. ym0 > driver_yyyymm(ntime_driver)) then
-       write(iulog,*) trim(subname),' model date ',yr*10000+mon*100+day, &
-                      ' is outside the driver range ',driver_yyyymm(1),' .. ', &
-                      driver_yyyymm(ntime_driver)
-       call shr_sys_abort(subname//' case period is not covered by the snow/ice driver')
+    if (emul) then
+       call lake_snowice_emulator_range(ym_first, ym_last)
+    else
+       ym_first = driver_yyyymm(1)
+       ym_last  = driver_yyyymm(ntime_driver)
     end if
-    if (ym0 < driver_yyyymm(1))            then ; ym0 = driver_yyyymm(1)            ; w = 1._r8 ; end if
-    if (ym1 > driver_yyyymm(ntime_driver)) then ; ym1 = driver_yyyymm(ntime_driver) ; w = 0._r8 ; end if
+
+    ! Clamp to the end points: outside the covered range the nearest month is held.
+    ! Half a month of zero-order hold at each end is acceptable; a case that runs wholly
+    ! outside the covered period is not, and is caught here.
+    if (ym1 < ym_first .or. ym0 > ym_last) then
+       write(iulog,*) trim(subname),' model date ',yr*10000+mon*100+day, &
+                      ' is outside the snow/ice range ',ym_first,' .. ',ym_last
+       call shr_sys_abort(subname//' case period is not covered by the snow/ice source')
+    end if
+    if (ym0 < ym_first) then ; ym0 = ym_first ; w = 1._r8 ; end if
+    if (ym1 > ym_last ) then ; ym1 = ym_last  ; w = 0._r8 ; end if
 
     if (ym0 /= cur_ym0 .or. ym1 /= cur_ym1) then
-       i0 = time_index(ym0)
-       i1 = time_index(ym1)
-       if (i0 < 1 .or. i1 < 1) then
-          write(iulog,*) trim(subname),' missing driver record for ',ym0,' or ',ym1
-          call shr_sys_abort(subname//' missing monthly record in the snow/ice driver')
+       if (emul) then
+          call lake_snowice_emulator_bracket(ym0, ym1)
+       else
+          i0 = time_index(ym0)
+          i1 = time_index(ym1)
+          if (i0 < 1 .or. i1 < 1) then
+             write(iulog,*) trim(subname),' missing driver record for ',ym0,' or ',ym1
+             call shr_sys_abort(subname//' missing monthly record in the snow/ice driver')
+          end if
+          call read_month('r', r0, i0) ; call read_month('r', r1, i1)
+          call read_month('t', t0, i0) ; call read_month('t', t1, i1)
        end if
-       call read_month('r', r0, i0) ; call read_month('r', r1, i1)
-       call read_month('t', t0, i0) ; call read_month('t', t1, i1)
        cur_ym0 = ym0 ; cur_ym1 = ym1
        if (masterproc) then
-          write(iulog,*) trim(subname),' snow/ice bracket now ',ym0,' -> ',ym1
+          write(iulog,*) trim(subname),' snow/ice bracket now ',ym0,' -> ',ym1, &
+                         ' (source ',trim(lake_snowice_source),')'
           call shr_sys_flush(iulog)
        end if
     end if
@@ -177,19 +205,35 @@ contains
     ! consistent with the h_ice actually being applied.
     dt_span = span*86400._r8
 
-    do n = rtmCTL%begr, rtmCTL%endr
-       TLake_r%lake_ice_fraction(n) = (1._r8-w)*r0%fice(n) + w*r1%fice(n)
-       TLake_r%lake_ice_depth(n)    = (1._r8-w)*r0%hice(n) + w*r1%hice(n)
-       TLake_r%lake_snow_fraction(n)= (1._r8-w)*r0%fsnw(n) + w*r1%fsnw(n)
-       TLake_r%lake_snow_depth(n)   = (1._r8-w)*r0%dsnw(n) + w*r1%dsnw(n)
-       TLake_r%lake_dhice_dt(n)     = (r1%hice(n) - r0%hice(n)) / dt_span
+    if (emul) then
+       do n = rtmCTL%begr, rtmCTL%endr
+          TLake_r%lake_ice_fraction(n) = (1._r8-w)*p_r0(1,n) + w*p_r1(1,n)
+          TLake_r%lake_ice_depth(n)    = (1._r8-w)*p_r0(2,n) + w*p_r1(2,n)
+          TLake_r%lake_snow_fraction(n)= (1._r8-w)*p_r0(3,n) + w*p_r1(3,n)
+          TLake_r%lake_snow_depth(n)   = (1._r8-w)*p_r0(4,n) + w*p_r1(4,n)
+          TLake_r%lake_dhice_dt(n)     = (p_r1(2,n) - p_r0(2,n)) / dt_span
 
-       TLake_t%lake_ice_fraction(n) = (1._r8-w)*t0%fice(n) + w*t1%fice(n)
-       TLake_t%lake_ice_depth(n)    = (1._r8-w)*t0%hice(n) + w*t1%hice(n)
-       TLake_t%lake_snow_fraction(n)= (1._r8-w)*t0%fsnw(n) + w*t1%fsnw(n)
-       TLake_t%lake_snow_depth(n)   = (1._r8-w)*t0%dsnw(n) + w*t1%dsnw(n)
-       TLake_t%lake_dhice_dt(n)     = (t1%hice(n) - t0%hice(n)) / dt_span
-    end do
+          TLake_t%lake_ice_fraction(n) = (1._r8-w)*p_t0(1,n) + w*p_t1(1,n)
+          TLake_t%lake_ice_depth(n)    = (1._r8-w)*p_t0(2,n) + w*p_t1(2,n)
+          TLake_t%lake_snow_fraction(n)= (1._r8-w)*p_t0(3,n) + w*p_t1(3,n)
+          TLake_t%lake_snow_depth(n)   = (1._r8-w)*p_t0(4,n) + w*p_t1(4,n)
+          TLake_t%lake_dhice_dt(n)     = (p_t1(2,n) - p_t0(2,n)) / dt_span
+       end do
+    else
+       do n = rtmCTL%begr, rtmCTL%endr
+          TLake_r%lake_ice_fraction(n) = (1._r8-w)*r0%fice(n) + w*r1%fice(n)
+          TLake_r%lake_ice_depth(n)    = (1._r8-w)*r0%hice(n) + w*r1%hice(n)
+          TLake_r%lake_snow_fraction(n)= (1._r8-w)*r0%fsnw(n) + w*r1%fsnw(n)
+          TLake_r%lake_snow_depth(n)   = (1._r8-w)*r0%dsnw(n) + w*r1%dsnw(n)
+          TLake_r%lake_dhice_dt(n)     = (r1%hice(n) - r0%hice(n)) / dt_span
+
+          TLake_t%lake_ice_fraction(n) = (1._r8-w)*t0%fice(n) + w*t1%fice(n)
+          TLake_t%lake_ice_depth(n)    = (1._r8-w)*t0%hice(n) + w*t1%hice(n)
+          TLake_t%lake_snow_fraction(n)= (1._r8-w)*t0%fsnw(n) + w*t1%fsnw(n)
+          TLake_t%lake_snow_depth(n)   = (1._r8-w)*t0%dsnw(n) + w*t1%dsnw(n)
+          TLake_t%lake_dhice_dt(n)     = (t1%hice(n) - t0%hice(n)) / dt_span
+       end do
+    end if
 
   end subroutine lake_snowice_update
 

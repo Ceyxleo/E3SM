@@ -180,12 +180,12 @@
     </arguments>
     </mpirun>
     <module_system type="module" allow_error="true">
-      <init_path lang="perl">/usr/share/lmod/8.3.1/init/perl</init_path>
-      <init_path lang="python">/usr/share/lmod/8.3.1/init/python</init_path>
-      <init_path lang="sh">/usr/share/lmod/8.3.1/init/sh</init_path>
-      <init_path lang="csh">/usr/share/lmod/8.3.1/init/csh</init_path>
-      <cmd_path lang="perl">/usr/share/lmod/lmod/libexec/lmod perl</cmd_path>
-      <cmd_path lang="python">/usr/share/lmod/lmod/libexec/lmod python</cmd_path>
+      <init_path lang="perl">/opt/cray/pe/lmod/lmod/init/perl</init_path>
+      <init_path lang="python">/opt/cray/pe/lmod/lmod/init/env_modules_python.py</init_path>
+      <init_path lang="sh">/opt/cray/pe/lmod/lmod/init/sh</init_path>
+      <init_path lang="csh">/opt/cray/pe/lmod/lmod/init/csh</init_path>
+      <cmd_path lang="perl">/opt/cray/pe/lmod/lmod/libexec/lmod perl</cmd_path>
+      <cmd_path lang="python">/opt/cray/pe/lmod/lmod/libexec/lmod python</cmd_path>
       <cmd_path lang="sh">module</cmd_path>
       <cmd_path lang="csh">module</cmd_path>
 
@@ -244,8 +244,8 @@
         <command name="load">craype-accel-host</command>
         <command name="load">craype/2.7.32</command>
         <command name="load">cray-mpich/8.1.30</command>
-        <command name="load">cray-hdf5-parallel/1.12.2.9</command>
-        <command name="load">cray-netcdf-hdf5parallel/4.9.0.9</command>
+        <command name="load">cray-hdf5-parallel/1.14.3.1</command>
+        <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command>
         <command name="load">cray-parallel-netcdf/1.12.3.13</command>
         <command name="load">cmake/3.30.2</command>
       </modules>
@@ -370,12 +370,12 @@
     </arguments>
     </mpirun>
     <module_system type="module" allow_error="true">
-      <init_path lang="perl">/usr/share/lmod/8.3.1/init/perl</init_path>
-      <init_path lang="python">/usr/share/lmod/8.3.1/init/python</init_path>
-      <init_path lang="sh">/usr/share/lmod/8.3.1/init/sh</init_path>
-      <init_path lang="csh">/usr/share/lmod/8.3.1/init/csh</init_path>
-      <cmd_path lang="perl">/usr/share/lmod/lmod/libexec/lmod perl</cmd_path>
-      <cmd_path lang="python">/usr/share/lmod/lmod/libexec/lmod python</cmd_path>
+      <init_path lang="perl">/opt/cray/pe/lmod/lmod/init/perl</init_path>
+      <init_path lang="python">/opt/cray/pe/lmod/lmod/init/env_modules_python.py</init_path>
+      <init_path lang="sh">/opt/cray/pe/lmod/lmod/init/sh</init_path>
+      <init_path lang="csh">/opt/cray/pe/lmod/lmod/init/csh</init_path>
+      <cmd_path lang="perl">/opt/cray/pe/lmod/lmod/libexec/lmod perl</cmd_path>
+      <cmd_path lang="python">/opt/cray/pe/lmod/lmod/libexec/lmod python</cmd_path>
       <cmd_path lang="sh">module</cmd_path>
       <cmd_path lang="csh">module</cmd_path>
 
@@ -601,8 +601,8 @@
         <!-- like alvarez-cpu, we still cant use the latest hdf as something not right with env -->
         <!-- <command name="load">cray-hdf5-parallel/1.14.3.1</command> -->
         <!-- <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command> -->
-        <command name="load">cray-hdf5-parallel/1.12.2.9</command>
-        <command name="load">cray-netcdf-hdf5parallel/4.9.0.9</command>
+        <command name="load">cray-hdf5-parallel/1.14.3.1</command>
+        <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command>
         <command name="load">cray-parallel-netcdf/1.12.3.13</command>
         <command name="load">cmake/3.30.2</command>
       </modules>
@@ -959,8 +959,8 @@
         <command name="load">cray-mpich/8.1.30</command>
         <!-- <command name="load">cray-hdf5-parallel/1.14.3.1</command> -->
         <!-- <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command> -->
-        <command name="load">cray-hdf5-parallel/1.12.2.9</command>
-        <command name="load">cray-netcdf-hdf5parallel/4.9.0.9</command>
+        <command name="load">cray-hdf5-parallel/1.14.3.1</command>
+        <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command>
         <command name="load">cray-parallel-netcdf/1.12.3.13</command>
         <command name="load">cmake/3.30.2</command>
       </modules>
@@ -4369,8 +4369,8 @@
         <command name="load">craype-accel-host</command>
         <command name="load">craype/2.7.30</command>
         <command name="load">cray-mpich/8.1.28</command>
-        <command name="load">cray-hdf5-parallel/1.12.2.9</command>
-        <command name="load">cray-netcdf-hdf5parallel/4.9.0.9</command>
+        <command name="load">cray-hdf5-parallel/1.14.3.1</command>
+        <command name="load">cray-netcdf-hdf5parallel/4.9.0.13</command>
         <command name="load">cray-parallel-netcdf/1.12.3.9</command>
         <command name="load">cmake/3.29.6</command>
       </modules>

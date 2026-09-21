@@ -9,7 +9,8 @@ module RtmHistFlds
 !
 ! !USES:
   use shr_kind_mod   , only: r8 => shr_kind_r8
-  use RunoffMod      , only : rtmCTL, TUnit_lake_r, Lake_r_out, TUnit_lake_t, Lake_t_out
+  use RunoffMod      , only : rtmCTL, TUnit_lake_r, Lake_r_out, TUnit_lake_t, Lake_t_out, &
+                              TLake_r, TLake_t
   use RtmHistFile    , only : RtmHistAddfld, RtmHistPrintflds
   use RtmVar         , only : wrmflag, inundflag, sediflag, heatflag, rstraflag, lakeflag, nlayers, spval, use_ocn_rof_two_way
 
@@ -272,6 +273,21 @@ contains
        call RtmHistAddfld (fname='R_LAKE_ASUR', units='m2',  &
             avgflag='A', long_name='MOSART mainchannel-lake surface area', &
             ptr_rof=rtmCTL%lake_r_Asur_nt1, default='active')
+       ! Lake water-budget terms.  These are the fields that make the lake water
+       ! balance closable from output: without them you cannot tell whether a small
+       ! lake is starved or over-drained.  They are sampled at the end of Rtmrun, not
+       ! averaged over the lake sub-timesteps: lake_inflow is set once per Euler call
+       ! so it is a faithful value, while lake_outflow/lake_spillflow carry the last
+       ! sub-timestep only and are indicative rather than exact.
+       call RtmHistAddfld (fname='R_LAKE_QIN'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART mainchannel-lake lake inflow: '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_r%lake_inflow, default='active')
+       call RtmHistAddfld (fname='R_LAKE_QOUT'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART mainchannel-lake lake outflow (last sub-step): '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_r%lake_outflow, default='active')
+       call RtmHistAddfld (fname='R_LAKE_QSPILL'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART mainchannel-lake lake rejected inflow (last sub-step): '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_r%lake_spillflow, default='active')
        call RtmHistAddfld (fname='R_LAKE_TSUR', units='Kelvin',  &
             avgflag='A', long_name='MOSART mainchannel-lake surface temperature', &
             ptr_rof=rtmCTL%lake_r_Tsur_nt1, default='active')
@@ -316,6 +332,21 @@ contains
        call RtmHistAddfld (fname='T_LAKE_ASUR', units='m2',  &
             avgflag='A', long_name='MOSART tributary channel lake surface area', &
             ptr_rof=rtmCTL%lake_t_Asur_nt1, default='active')
+       ! Lake water-budget terms.  These are the fields that make the lake water
+       ! balance closable from output: without them you cannot tell whether a small
+       ! lake is starved or over-drained.  They are sampled at the end of Rtmrun, not
+       ! averaged over the lake sub-timesteps: lake_inflow is set once per Euler call
+       ! so it is a faithful value, while lake_outflow/lake_spillflow carry the last
+       ! sub-timestep only and are indicative rather than exact.
+       call RtmHistAddfld (fname='T_LAKE_QIN'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART tributary channel lake lake inflow: '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_t%lake_inflow, default='active')
+       call RtmHistAddfld (fname='T_LAKE_QOUT'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART tributary channel lake lake outflow (last sub-step): '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_t%lake_outflow, default='active')
+       call RtmHistAddfld (fname='T_LAKE_QSPILL'//'_'//trim(rtm_tracers(1)), units='m3/s',  &
+            avgflag='A', long_name='MOSART tributary channel lake lake rejected inflow (last sub-step): '//trim(rtm_tracers(1)), &
+            ptr_rof=TLake_t%lake_spillflow, default='active')
        call RtmHistAddfld (fname='T_LAKE_TSUR', units='Kelvin',  &
             avgflag='A', long_name='MOSART tributary channel lake surface temperature', &
             ptr_rof=rtmCTL%lake_t_Tsur_nt1, default='active')

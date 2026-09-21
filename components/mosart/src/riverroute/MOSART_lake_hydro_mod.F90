@@ -22,7 +22,6 @@ MODULE MOSART_lake_hydro_mod
     
     public mosart_lake_hydro_sub_channel
     public mosart_lake_hydro_main_channel
-    !public mosart_lake_routing
     
 ! !PUBLIC MEMBER FUNCTIONS:
     contains  
@@ -178,7 +177,7 @@ MODULE MOSART_lake_hydro_mod
             end if
             
             if (delta_h > TINYVALUE) then
-                outflow = - CR_lake_Bernoulli(TUnit%twidth(iunit), delta_h)
+                outflow = - CR_lake_Bernoulli(TUnit%rwidth(iunit), delta_h)
                 do i=TLake_r%d_ns(iunit), 1, -1
                     if(delta_h <= sum(TLake_r%dd_z(iunit,TLake_r%d_ns(iunit):i))) then
                         TLake_r%J_Min(iunit) = i
@@ -230,41 +229,6 @@ MODULE MOSART_lake_hydro_mod
         
     end subroutine mosart_lake_hydro_main_channel
 
-
-    function mosart_lake_routing(iunit,nt,localDeltaT) result(outflow_)
-    ! !DESCRIPTION: calculate the lake outflow.
-    
-        use shr_sys_mod , only : shr_sys_flush
-    
-        implicit none
-        integer,  intent(in) :: iunit, nt
-        real(r8), intent(in) :: localDeltaT
-        real(r8) :: outflow_    ! Lake outflow (m3/s)
-        character(len=*),parameter :: subname = '(mosart_lake_routing)'
-        
-        integer  :: j,i                   ! indices
-        real(r8) :: delta_V              ! the excess volume (m3)
-        real(r8) :: delta_h              ! the hydraulic head difference (m)
-        
-!**************************************************************************************************************************************************
-        outflow_ = 0._r8
-            
-        delta_V = TLake_r%V_str(iunit)-0.75*TLake_r%v_zti(iunit,ngeom+1)
-        
-        if (delta_V > TINYVALUE) then
-            delta_h = delta_V/(TUnit_lake_r%A_max(iunit)*1e6) ! here unit for V_max is mcm, and for A_max is km2
-            outflow_ = CR_lake_Bernoulli(TUnit%rwidth(iunit), delta_h)
-            ! a treatment for water balance to avoid negative lake storage when evap. and outflow both large
-            if(outflow_*localDeltaT - delta_V > TINYVALUE) then
-                outflow_ = delta_V / localDeltaT
-            end if      
-        else
-            outflow_ = 0._r8
-        end if
-                        
-        return
-        
-    end function mosart_lake_routing
 
   
 !-----------------------------------------------------------------------

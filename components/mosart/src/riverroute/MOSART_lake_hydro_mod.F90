@@ -177,7 +177,7 @@ MODULE MOSART_lake_hydro_mod
             end if
             
             if (delta_h > TINYVALUE) then
-                outflow = - CR_lake_Bernoulli(TUnit%rwidth(iunit), delta_h)
+                outflow = - CR_lake_Bernoulli(TUnit%twidth(iunit), delta_h)
                 do i=TLake_r%d_ns(iunit), 1, -1
                     if(delta_h <= sum(TLake_r%dd_z(iunit,TLake_r%d_ns(iunit):i))) then
                         TLake_r%J_Min(iunit) = i

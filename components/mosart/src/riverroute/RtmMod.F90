@@ -5117,6 +5117,8 @@ contains
          allocate (TUnit_lake_r%v_min(begr:endr))
          TUnit_lake_r%v_min = 0._r8
          allocate (TUnit_lake_r%elev(begr:endr))
+         allocate (TUnit_lake_r%outlet_h(begr:endr))
+         TUnit_lake_r%outlet_h = 0._r8
          TUnit_lake_r%elev = 0._r8
          allocate (TUnit_lake_r%para_a(begr:endr))
          TUnit_lake_r%para_a = 0._r8
@@ -5239,6 +5241,8 @@ contains
          allocate (TUnit_lake_t%v_min(begr:endr))
          TUnit_lake_t%v_min = 0._r8
          allocate (TUnit_lake_t%elev(begr:endr))
+         allocate (TUnit_lake_t%outlet_h(begr:endr))
+         TUnit_lake_t%outlet_h = 0._r8
          TUnit_lake_t%elev = 0._r8
          allocate (TUnit_lake_t%A_local(begr:endr))
          TUnit_lake_t%A_local = 0._r8
@@ -5377,6 +5381,21 @@ contains
                   
          ier = pio_inq_varid(ncid, 'mlake_Elevation', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_r%elev, ier)
+
+         ! Optional: a per-lake outlet sill supplied by the parameter file.  When the
+         ! variable is absent the array stays at 0 and MOSART_lake_hydro_mod falls back
+         ! to its built-in rule, so old parameter files keep working unchanged.
+         ier = pio_inq_varid(ncid, 'mlake_outlet_h', vardesc)
+         if (ier == PIO_NOERR) then
+            call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_r%outlet_h, ier)
+            if (masterproc) write(iulog,FORMR) trim(subname),' read outlet_h in r-lake', &
+                 minval(TUnit_lake_r%outlet_h),maxval(TUnit_lake_r%outlet_h)
+         else
+            TUnit_lake_r%outlet_h = 0._r8
+            if (masterproc) write(iulog,*) trim(subname), &
+                 ' no mlake_outlet_h on the parameter file; using the built-in outlet rule'
+         end if
+         call shr_sys_flush(iulog)
          if (masterproc) write(iulog,FORMR) trim(subname),' read elev in r-lake',minval(TUnit_lake_r%elev),maxval(TUnit_lake_r%elev)
          call shr_sys_flush(iulog)
 
@@ -5470,6 +5489,21 @@ contains
 
          ier = pio_inq_varid(ncid, 'tlake_Elevation', vardesc)
          call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%elev, ier)
+
+         ! Optional: a per-lake outlet sill supplied by the parameter file.  When the
+         ! variable is absent the array stays at 0 and MOSART_lake_hydro_mod falls back
+         ! to its built-in rule, so old parameter files keep working unchanged.
+         ier = pio_inq_varid(ncid, 'tlake_outlet_h', vardesc)
+         if (ier == PIO_NOERR) then
+            call pio_read_darray(ncid, vardesc, iodesc_dbl , TUnit_lake_t%outlet_h, ier)
+            if (masterproc) write(iulog,FORMR) trim(subname),' read outlet_h in t-lake', &
+                 minval(TUnit_lake_t%outlet_h),maxval(TUnit_lake_t%outlet_h)
+         else
+            TUnit_lake_t%outlet_h = 0._r8
+            if (masterproc) write(iulog,*) trim(subname), &
+                 ' no tlake_outlet_h on the parameter file; using the built-in outlet rule'
+         end if
+         call shr_sys_flush(iulog)
          if (masterproc) write(iulog,FORMR) trim(subname),' read elev in t-lake',minval(TUnit_lake_t%elev),maxval(TUnit_lake_t%elev)
          call shr_sys_flush(iulog)
 

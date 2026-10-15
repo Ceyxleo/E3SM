@@ -62,7 +62,13 @@ MODULE MOSART_lake_hydro_mod
             if(TLake_t%d_lake(iunit) <= 0.1_r8) then ! no outflow when lake water depth is very shallow
                 delta_h = 0._r8
             else
-                d_min = max(TUnit_lake_t%h_lake(iunit) - 2._r8, 0._r8) !! TODO: here set the bankfull channel depth for t-zone as 2 meters
+                ! Outlet sill: use the per-lake value from the parameter file when it is
+                ! there, otherwise keep the built-in rule so old inputs are unaffected.
+                if (TUnit_lake_t%outlet_h(iunit) > 0._r8) then
+                    d_min = TUnit_lake_t%outlet_h(iunit)
+                else
+                    d_min = max(TUnit_lake_t%h_lake(iunit) - 2._r8, 0._r8) !! TODO: here set the bankfull channel depth for t-zone as 2 meters
+                end if
                 delta_h = TLake_t%d_lake(iunit) - d_min  ! only allow outflow when lake water level exceeds the channel bed elevation
                 if(delta_h < TINYVALUE) then
                     delta_h = 0._r8
@@ -164,7 +170,13 @@ MODULE MOSART_lake_hydro_mod
             if(TLake_r%d_lake(iunit) <= 0.1_r8) then ! no outflow when lake water depth is very shallow
                 delta_h = 0._r8
             else
-                d_min = max(TUnit_lake_r%h_lake(iunit) - TUnit%rdepth(iunit), 0._r8)
+                ! Outlet sill: use the per-lake value from the parameter file when it is
+                ! there, otherwise keep the built-in rule so old inputs are unaffected.
+                if (TUnit_lake_r%outlet_h(iunit) > 0._r8) then
+                    d_min = TUnit_lake_r%outlet_h(iunit)
+                else
+                    d_min = max(TUnit_lake_r%h_lake(iunit) - TUnit%rdepth(iunit), 0._r8)
+                end if
                 delta_h = TLake_r%d_lake(iunit) - d_min  ! only allow outflow when lake water level exceeds the channel bed elevation
                 if(delta_h < TINYVALUE) then
                     delta_h = 0._r8
@@ -177,7 +189,7 @@ MODULE MOSART_lake_hydro_mod
             end if
             
             if (delta_h > TINYVALUE) then
-                outflow = - CR_lake_Bernoulli(TUnit%twidth(iunit), delta_h)
+                outflow = - CR_lake_Bernoulli(TUnit%rwidth(iunit), delta_h)
                 do i=TLake_r%d_ns(iunit), 1, -1
                     if(delta_h <= sum(TLake_r%dd_z(iunit,TLake_r%d_ns(iunit):i))) then
                         TLake_r%J_Min(iunit) = i

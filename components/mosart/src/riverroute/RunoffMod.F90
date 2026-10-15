@@ -573,6 +573,9 @@ module RunoffMod
      real(r8), pointer :: C_vs(:)          ! (nunit) correction coefficient for storage
      real(r8), pointer :: V_dfs(:)         ! (nunit) storage difference of assumed geometry (mcm)
      real(r8), pointer :: A_dfs(:)         ! (nunit) surface area difference of assumed geometry (km2)
+     real(r8), pointer :: outlet_h(:)      ! (nunit) outlet sill elevation above the lake bottom [m].
+                                          ! Read from <m|t>lake_outlet_h when the parameter file supplies it;
+                                          ! 0 means absent and the built-in rule is used instead.
      real(r8), pointer :: h_min(:)         ! (nunit) mininum lake depth, outflow allowed only when exceeding it [m]
      real(r8), pointer :: v_min(:)         ! (nunit) mininum lake storage, outflow allowed only when exceeding it [m]
 
